@@ -39,19 +39,19 @@ public class IDCT_2D extends IDCT_1D {
 
     final int[] tmp2D = new int[64];
 
-    public void compute(ByteBuffer out, int outPos, int outStride, short[] data, short[] dq) {
+    public void compute(ByteBuffer out, int outPos, int outStride, short[] data) {
         final int[] tmp = tmp2D;
 
         for(int i=0 ; i<8 ; i++) {
             compute(
-                    data[i   ] * dq[i   ],
-                    data[i+ 8] * dq[i+ 8],
-                    data[i+16] * dq[i+16],
-                    data[i+24] * dq[i+24],
-                    data[i+32] * dq[i+32],
-                    data[i+40] * dq[i+40],
-                    data[i+48] * dq[i+48],
-                    data[i+56] * dq[i+56]);
+                    data[i   ],
+                    data[i+ 8],
+                    data[i+16],
+                    data[i+24],
+                    data[i+32],
+                    data[i+40],
+                    data[i+48],
+                    data[i+56]);
             int x0o = x0 + 512;
             tmp[i   ] = (x0o+t3) >> 10;
             tmp[i+56] = (x0o-t3) >> 10;

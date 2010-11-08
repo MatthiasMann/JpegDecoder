@@ -59,7 +59,7 @@ public class Jpeg {
     final short[] data;
     final Huffman[] huffDC;
     final Huffman[] huffAC;
-    final short[][] dequant;
+    final byte[][] dequant;
 
     Component[] components;
     int[] order;
@@ -86,7 +86,7 @@ public class Jpeg {
         this.data = new short[64];
         this.huffDC = new Huffman[4];
         this.huffAC = new Huffman[4];
-        this.dequant = new short[4][64];
+        this.dequant = new byte[4][64];
     }
 
     public boolean isIgnoreIOerror() {
@@ -235,20 +235,24 @@ public class Jpeg {
     private void decodeBlock(short[] data, Component c) throws IOException {
         Arrays.fill(data, (short)0);
 
-        int t = decode(huffDC[c.hd]);
-        if(t < 0) {
-            throwBadHuffmanCode();
-        }
+        {
+            int t = decode(huffDC[c.hd]);
+            if(t < 0) {
+                throwBadHuffmanCode();
+            }
 
-        int dc = c.dcPred;
-        if(t > 0) {
-            dc += extendReceive(t);
-            c.dcPred = dc;
+            int dc = c.dcPred;
+            if(t > 0) {
+                dc += extendReceive(t);
+                c.dcPred = dc;
+            }
+
+            data[0] = (short)dc;
         }
 
         final Huffman hac = huffAC[c.ha];
+        final byte[] dq = dequant[c.tq];
         
-        data[0] = (short)dc;
         int k = 1;
         do {
             int rs = decode(hac);
@@ -258,7 +262,8 @@ public class Jpeg {
             int s = rs & 15;
             if(s != 0) {
                 k += rs >> 4;
-                data[dezigzag[k++]] = (short)extendReceive(s);
+                int v = extendReceive(s) * (dq[k] & 0xFF);
+                data[dezigzag[k++]] = (short)v;
             } else {
                 k += 16;
                 if(rs != 0xF0) {
@@ -332,7 +337,7 @@ public class Jpeg {
                 int outPos = c.outPos + c.outStride*j*8;
                 for(int i=0 ; i<w ; i++,outPos+=8) {
                     decodeBlock(data, c);
-                    idct2D.compute(c.out, outPos, c.outStride, data, dequant[c.tq]);
+                    idct2D.compute(c.out, outPos, c.outStride, data);
                     if(--todo <= 0) {
                         if(!checkRestart()) {
                             return;
@@ -352,7 +357,7 @@ public class Jpeg {
                             int outPos = c.outPos + i*c.h*8 + y2*c.outStride;
                             for(int x=0 ; x<c.h ; x++,outPos+=8) {
                                 decodeBlock(data, c);
-                                idct2D.compute(c.out, outPos, c.outStride, data, dequant[c.tq]);
+                                idct2D.compute(c.out, outPos, c.outStride, data);
                             }
                         }
                     }
@@ -393,9 +398,7 @@ public class Jpeg {
                     if(t > 3) {
                         throw new IOException("bad DQT table");
                     }
-                    for(int i=0 ; i<64 ; i++) {
-                        dequant[t][dezigzag[i]] = (short)getU8();
-                    }
+                    read(dequant[t], 0, 64);
                     l -= 65;
                 }
                 return l == 0;
