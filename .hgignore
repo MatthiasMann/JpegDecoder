@@ -1,0 +1,11 @@
+\.orig$
+\.orig\..*$
+\.chg\..*$
+\.rej$
+\.conflict\~$
+^bla1\.tga$
+^bla3\.tga$
+^bla2\.tga$
+^dist/
+^build/
+^nbproject/private/
