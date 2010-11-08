@@ -1,8 +1,32 @@
 /*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
+ * Copyright (c) 2008-2010, Matthias Mann
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright notice,
+ *       this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Matthias Mann nor the names of its contributors may
+ *       be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package de.matthiasmann.jpegdecoder;
 
 import java.io.EOFException;
@@ -26,11 +50,15 @@ public class Jpeg {
     static final int MARKER_NONE = 0xFF;
     
     final InputStream is;
-    final IDCT_1D idct1D;
-    final int[] idctTmp;
+    final byte[] inputBuffer;
+    int inputBufferPos;
+    int inputBufferValid;
+
+    final IDCT_2D idct2D;
+    final short[] data;
     final Huffman[] huffDC;
     final Huffman[] huffAC;
-    final int[][] dequant;
+    final short[][] dequant;
 
     Component[] components;
     int[] order;
@@ -51,31 +79,82 @@ public class Jpeg {
 
     public Jpeg(InputStream is) {
         this.is = is;
-        this.idct1D = new IDCT_1D();
-        this.idctTmp = new int[64];
+        this.inputBuffer = new byte[4096];
+        
+        this.idct2D = new IDCT_2D();
+        this.data = new short[64];
         this.huffDC = new Huffman[4];
         this.huffAC = new Huffman[4];
-        this.dequant = new int[4][64];
+        this.dequant = new short[4][64];
+    }
+
+    void fetch() throws IOException {
+        inputBufferValid = 0;   // in case of exception
+        inputBufferPos = 0;
+
+        inputBufferValid = is.read(inputBuffer);
+
+        if(inputBufferValid <= 0) {
+            inputBufferValid = 0;
+            throw new EOFException();
+        }
+    }
+
+    void read(byte[] buf, int off, int len) throws IOException {
+        while(len > 0) {
+            int avail = inputBufferValid - inputBufferPos;
+            if(avail == 0) {
+                fetch();
+                continue;
+            }
+            int copy = (avail > len) ? len : avail;
+            System.arraycopy(inputBuffer, inputBufferPos, buf, off, len);
+            off += copy;
+            len -= copy;
+            inputBufferPos += copy;
+        }
     }
 
     int getU8() throws IOException {
-        return is.read();
+        if(inputBufferPos == inputBufferValid) {
+            fetch();
+        }
+        return inputBuffer[inputBufferPos++] & 255;
     }
 
     int getU16() throws IOException {
         int t = getU8();
         return (t << 8) | getU8();
     }
+
+    void skip(int amount) throws IOException {
+        while(amount > 0) {
+            int inputBufferRemaining = inputBufferValid - inputBufferPos;
+            if(amount > inputBufferRemaining) {
+                amount -= inputBufferRemaining;
+                fetch();
+            } else {
+                inputBufferPos += amount;
+                return;
+            }
+        }
+    }
+
+    void growBufferCheckMarker() throws IOException {
+        int c = getU8();
+        if(c != 0) {
+            marker = c;
+            nomore = true;
+        }
+    }
     
     void growBufferUnsafe() throws IOException {
         do {
-            int b = nomore ? 0 : getU8();
-            if(b == 0xff) {
-                int c = getU8();
-                if(c != 0) {
-                    marker = c;
-                    nomore = true;
-                    return;
+            int b = 0;
+            if(!nomore) {
+                b = getU8();
+                if(b == 0xff) {
+                    growBufferCheckMarker();
                 }
             }
             codeBuffer |= b << (24 - codeBits);
@@ -191,71 +270,6 @@ public class Jpeg {
         throw new IOException("Bad huffman code");
     }
 
-    private static byte clampShift17(int x) {
-        x >>= 17;
-        if(x < 0) {
-            return 0;
-        }
-        if(x > 255) {
-            return (byte)255;
-        }
-        return (byte)x;
-    }
-
-    private void idctBlock(ByteBuffer out, int outPos, int outStride, short[] data, int[] dq) {
-        final IDCT_1D idct = idct1D;
-        final int[] tmp = idctTmp;
-
-        for(int i=0 ; i<8 ; i++) {
-            idct.compute(
-                    data[i   ] * dq[i   ],
-                    data[i+ 8] * dq[i+ 8],
-                    data[i+16] * dq[i+16],
-                    data[i+24] * dq[i+24],
-                    data[i+32] * dq[i+32],
-                    data[i+40] * dq[i+40],
-                    data[i+48] * dq[i+48],
-                    data[i+56] * dq[i+56]);
-            int x0 = idct.x0 + 512;
-            int x1 = idct.x1 + 512;
-            int x2 = idct.x2 + 512;
-            int x3 = idct.x3 + 512;
-            tmp[i   ] = (x0+idct.t3) >> 10;
-            tmp[i+56] = (x0-idct.t3) >> 10;
-            tmp[i+ 8] = (x1+idct.t2) >> 10;
-            tmp[i+48] = (x1-idct.t2) >> 10;
-            tmp[i+16] = (x2+idct.t1) >> 10;
-            tmp[i+40] = (x2-idct.t1) >> 10;
-            tmp[i+24] = (x3+idct.t0) >> 10;
-            tmp[i+32] = (x3-idct.t0) >> 10;
-        }
-
-        for(int i=0 ; i<64 ; i+=8) {
-            idct.compute(
-                    tmp[i  ],
-                    tmp[i+1],
-                    tmp[i+2],
-                    tmp[i+3],
-                    tmp[i+4],
-                    tmp[i+5],
-                    tmp[i+6],
-                    tmp[i+7]);
-            int x0 = idct.x0 + (257 << 16);
-            int x1 = idct.x1 + (257 << 16);
-            int x2 = idct.x2 + (257 << 16);
-            int x3 = idct.x3 + (257 << 16);
-            out.put(outPos  , clampShift17(x0+idct.t3));
-            out.put(outPos+7, clampShift17(x0-idct.t3));
-            out.put(outPos+1, clampShift17(x1+idct.t2));
-            out.put(outPos+6, clampShift17(x1-idct.t2));
-            out.put(outPos+2, clampShift17(x2+idct.t1));
-            out.put(outPos+5, clampShift17(x2-idct.t1));
-            out.put(outPos+3, clampShift17(x3+idct.t0));
-            out.put(outPos+4, clampShift17(x3-idct.t0));
-            outPos += outStride;
-        }
-    }
-
     int getMarker() throws IOException {
         int m = marker;
         if(m != MARKER_NONE) {
@@ -305,8 +319,6 @@ public class Jpeg {
     }
 
     void parseEntropyCodedData() throws IOException {
-        final short[] data = new short[64];
-
         reset();
         if(order.length == 1) {
             int n = order[0];
@@ -318,7 +330,7 @@ public class Jpeg {
                 int outPos = c.outPos + c.outStride*j*8;
                 for(int i=0 ; i<w ; i++,outPos+=8) {
                     decodeBlock(data, c);
-                    idctBlock(c.out, outPos, c.outStride, data, dequant[c.tq]);
+                    idct2D.compute(c.out, outPos, c.outStride, data, dequant[c.tq]);
                     if(--todo <= 0) {
                         if(!checkRestart()) {
                             return;
@@ -337,8 +349,8 @@ public class Jpeg {
                         for(int y=0 ; y<c.v ; y++,y2+=8) {
                             int outPos = c.outPos + i*c.h*8 + y2*c.outStride;
                             for(int x=0 ; x<c.h ; x++,outPos+=8) {
-                                decodeBlock(data,c);
-                                idctBlock(c.out, outPos, c.outStride, data, dequant[c.tq]);
+                                decodeBlock(data, c);
+                                idct2D.compute(c.out, outPos, c.outStride, data, dequant[c.tq]);
                             }
                         }
                     }
@@ -380,7 +392,7 @@ public class Jpeg {
                         throw new IOException("bad DQT table");
                     }
                     for(int i=0 ; i<64 ; i++) {
-                        dequant[t][dezigzag[i]] = getU8();
+                        dequant[t][dezigzag[i]] = (short)getU8();
                     }
                     l -= 65;
                 }
@@ -396,16 +408,14 @@ public class Jpeg {
                     if(tc > 1 || th > 3) {
                         throw new IOException("bad DHT header");
                     }
-                    int[] tmp = idctTmp;
+                    int[] tmp = idct2D.tmp2D;   // reuse memory
                     for(int i=0 ; i<16 ; i++) {
                         tmp[i] = getU8();
                     }
                     Huffman h = new Huffman(tmp);
                     int m = h.values.length;
                     l -= 17 + m;
-                    for(int i=0 ; i<m ; i++) {
-                        h.values[i] = (byte)getU8();
-                    }
+                    read(h.values, 0, m);
                     if(tc == 0) {
                         huffDC[th] = h;
                     } else {
@@ -417,9 +427,7 @@ public class Jpeg {
 
             default:
                 if((marker >= 0xE0 && marker <= 0xEF) || marker == 0xFE) {
-                    for(int l=getU16() ; l>2 ; l--) {
-                        getU8();
-                    }
+                    skip(getU16() - 2);
                     return true;
                 }
                 return false;

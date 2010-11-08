@@ -19,7 +19,7 @@ public class Main {
      * @param args the command line arguments
      */
     public static void main(String[] args) throws IOException {
-        Jpeg jpeg = new Jpeg(new FileInputStream("e:\\upgrades.jpg"));
+        Jpeg jpeg = new Jpeg(new FileInputStream("e:\\Saturn_Anzeige.jpg"));
         try {
             jpeg.decodeJpegImage();
         } catch(IOException ex) {
