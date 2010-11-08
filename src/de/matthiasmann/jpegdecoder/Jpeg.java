@@ -62,7 +62,7 @@ public class Jpeg {
     final byte[][] dequant;
 
     Component[] components;
-    int[] order;
+    Component[] order;
     
     int codeBuffer;
     int codeBits;
@@ -185,11 +185,6 @@ public class Jpeg {
         int k = h.fast[codeBuffer >>> (32 - Huffman.FAST_BITS)] & 255;
         if(k < 0xFF) {
             int s = h.size[k];
-            /*
-            if(s > codeBits) {
-                return -1;
-            }
-            */
             codeBuffer <<= s;
             codeBits    -= s;
             return h.values[k] & 255;
@@ -199,40 +194,30 @@ public class Jpeg {
 
     private int decodeSlow(Huffman h) throws IOException {
         int temp = codeBuffer >>> 16;
-        int k = Huffman.FAST_BITS + 1;
+        int s = Huffman.FAST_BITS + 1;
 
-        while(temp >= h.maxCode[k]) {
-            k++;
+        while(temp >= h.maxCode[s]) {
+            s++;
         }
 
-        if(k == 17) {
-            codeBits -= 16;
-            return -1;
-        }
-        /*
-        if(k > codeBits) {
-            return -1;
-        }
-        */
-
-        int c = (codeBuffer >>> (32 - k)) + h.delta[k];
-        codeBuffer <<= k;
-        codeBits    -= k;
-
-        return h.values[c] & 255;
+        int k = (temp >>> (16 - s)) + h.delta[s];
+        codeBuffer <<= s;
+        codeBits    -= s;
+        return h.values[k] & 255;
     }
 
     private int extendReceive(int n) throws IOException {
-        if(codeBits < n) {
+        if(codeBits < 24) {
             growBufferUnsafe();
         }
 
-        int k = (codeBuffer >>> (32 - n)) & ((1 << n) - 1);
+        int k = codeBuffer >>> (32 - n);
         codeBuffer <<= n;
         codeBits    -= n;
 
-        if(k < (1 << (n-1))) {
-            return (-1 << n) + k + 1;
+        int limit = 1 << (n-1);
+        if(k < limit) {
+            k -= limit*2 - 1;
         }
         return k;
     }
@@ -241,11 +226,7 @@ public class Jpeg {
         Arrays.fill(data, (short)0);
 
         {
-            int t = decode(huffDC[c.hd]);
-            if(t < 0) {
-                throwBadHuffmanCode();
-            }
-
+            int t = decode(c.huffDC);
             int dc = c.dcPred;
             if(t > 0) {
                 dc += extendReceive(t);
@@ -255,15 +236,12 @@ public class Jpeg {
             data[0] = (short)dc;
         }
 
-        final Huffman hac = huffAC[c.ha];
-        final byte[] dq = dequant[c.tq];
-        
+        final Huffman hac = c.huffAC;
+        final byte[] dq = c.dequant;
+
         int k = 1;
         do {
             int rs = decode(hac);
-            if(rs < 0) {
-                throwBadHuffmanCode();
-            }
             k += rs >> 4;
             int s = rs & 15;
             if(s != 0) {
@@ -279,7 +257,7 @@ public class Jpeg {
         throw new IOException("Bad huffman code");
     }
 
-    int getMarker() throws IOException {
+    private int getMarker() throws IOException {
         int m = marker;
         if(m != MARKER_NONE) {
             marker = MARKER_NONE;
@@ -295,11 +273,7 @@ public class Jpeg {
         return m;
     }
 
-    static boolean isRestart(int marker) {
-        return marker >= 0xD0 && marker <= 0xD7;
-    }
-    
-    void reset() {
+    private void reset() {
         codeBits = 0;
         codeBuffer = 0;
         nomore = false;
@@ -316,60 +290,72 @@ public class Jpeg {
         }
     }
 
-    boolean checkRestart() throws IOException {
+    private boolean checkRestart() throws IOException {
         if(codeBits < 24) {
             growBufferUnsafe();
         }
-        if(!isRestart(marker)) {
-            return false;
+        if(marker >= 0xD0 && marker <= 0xD7) {
+            reset();
+            return true;
         }
-        reset();
-        return true;
+        return false;
     }
 
-    void parseEntropyCodedData() throws IOException {
+    private void parseEntropyCodedDataPlanar(Component c) throws IOException {
+        int w = (c.x + 7) >> 3;
+        int h = (c.y + 7) >> 3;
+
+        for(int j=0 ; j<h ; j++) {
+            int outPos = c.outPos + c.outStride*j*8;
+            for(int i=0 ; i<w ; i++,outPos+=8) {
+                try {
+                    decodeBlock(data, c);
+                } catch (ArrayIndexOutOfBoundsException ex) {
+                    throwBadHuffmanCode();
+                }
+                idct2D.compute(c.out, outPos, c.outStride, data);
+                if(--todo <= 0) {
+                    if(!checkRestart()) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private void parseEntropyCodedDataMCU() throws IOException {
+        for(int j=0 ; j<mcuY ; j++) {
+            for(int i=0 ; i<mcuX ; i++) {
+                for(Component c : order) {
+                    int outPosY = c.outPos + i*c.h*8 + j*c.v*8*c.outStride;
+
+                    for(int y=0 ; y<c.v ; y++,outPosY+=8*c.outStride) {
+                        int outPos = outPosY;
+                        for(int x=0 ; x<c.h ; x++,outPos+=8) {
+                            try {
+                                decodeBlock(data, c);
+                            } catch (ArrayIndexOutOfBoundsException ex) {
+                                throwBadHuffmanCode();
+                            }
+                            idct2D.compute(c.out, outPos, c.outStride, data);
+                        }
+                    }
+                }
+                if(--todo <= 0) {
+                    if(!checkRestart()) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private void parseEntropyCodedData() throws IOException {
         reset();
         if(order.length == 1) {
-            int n = order[0];
-            Component c = components[n];
-            int w = (c.x + 7) >> 3;
-            int h = (c.y + 7) >> 3;
-
-            for(int j=0 ; j<h ; j++) {
-                int outPos = c.outPos + c.outStride*j*8;
-                for(int i=0 ; i<w ; i++,outPos+=8) {
-                    decodeBlock(data, c);
-                    idct2D.compute(c.out, outPos, c.outStride, data);
-                    if(--todo <= 0) {
-                        if(!checkRestart()) {
-                            return;
-                        }
-                    }
-                }
-            }
+            parseEntropyCodedDataPlanar(order[0]);
         } else {
-            for(int j=0 ; j<mcuY ; j++) {
-                for(int i=0 ; i<mcuX ; i++) {
-                    for(int k=0 ; k<order.length ; k++) {
-                        int n = order[k];
-                        Component c = components[n];
-                        int y2 = j*c.v*8;
-                        
-                        for(int y=0 ; y<c.v ; y++,y2+=8) {
-                            int outPos = c.outPos + i*c.h*8 + y2*c.outStride;
-                            for(int x=0 ; x<c.h ; x++,outPos+=8) {
-                                decodeBlock(data, c);
-                                idct2D.compute(c.out, outPos, c.outStride, data);
-                            }
-                        }
-                    }
-                    if(--todo <= 0) {
-                        if(!checkRestart()) {
-                            return;
-                        }
-                    }
-                }
-            }
+            parseEntropyCodedDataMCU();
         }
     }
 
@@ -452,25 +438,26 @@ public class Jpeg {
             throw new IOException("bad SOS length");
         }
 
-        order = new int[scanN];
+        order = new Component[scanN];
         for(int i=0 ; i<scanN ; i++) {
             int id = getU8();
             int q = getU8();
-            int n;
-            for(n=components.length ; n-->0 ;) {
-                if(components[n].id == id) {
+            for(Component c : components) {
+                if(c.id == id) {
+                    int hd = q >> 4;
+                    int ha = q & 15;
+                    if(hd > 3 || ha > 3) {
+                        throw new IOException("bad huffman table index");
+                    }
+                    c.huffDC = huffDC[ha];
+                    c.huffAC = huffAC[ha];
+                    order[i] = c;
                     break;
                 }
             }
-            if(n < 0) {
+            if(order[i] == null) {
                 return false;
             }
-            components[n].hd = q >> 4;
-            components[n].ha = q & 15;
-            if(components[n].hd > 3 || components[n].ha > 3) {
-                throw new IOException("bad huffman table index");
-            }
-            order[i] = n;
         }
         
         if(getU8() != 0) {
@@ -514,9 +501,10 @@ public class Jpeg {
         for(int i=0 ; i<numComps ; i++) {
             Component c = new Component(getU8());
             int q = getU8();
+            int tq = getU8();
+
             c.h = q >> 4;
             c.v = q & 15;
-            c.tq = getU8();
 
             if(c.h == 0 || c.h > 4) {
                 throw new IOException("bad H");
@@ -524,9 +512,10 @@ public class Jpeg {
             if(c.v == 0 || c.v > 4) {
                 throw new IOException("bad V");
             }
-            if(c.tq > 3) {
+            if(tq > 3) {
                 throw new IOException("bad TQ");
             }
+            c.dequant = dequant[tq];
 
             components[i] = c;
         }

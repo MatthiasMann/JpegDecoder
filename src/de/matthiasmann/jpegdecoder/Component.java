@@ -16,9 +16,9 @@ public class Component {
     final int id;
 
     int dcPred;
-    int hd;
-    int ha;
-    int tq;
+    Huffman huffDC;
+    Huffman huffAC;
+    byte[] dequant;
     int v;
     int h;
     int x;
