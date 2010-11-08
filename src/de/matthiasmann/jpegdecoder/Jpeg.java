@@ -49,10 +49,11 @@ public class Jpeg {
     
     static final int MARKER_NONE = 0xFF;
     
-    final InputStream is;
-    final byte[] inputBuffer;
-    int inputBufferPos;
-    int inputBufferValid;
+    private final InputStream is;
+    private final byte[] inputBuffer;
+    private int inputBufferPos;
+    private int inputBufferValid;
+    private boolean ignoreIOerror;
 
     final IDCT_2D idct2D;
     final short[] data;
@@ -88,19 +89,34 @@ public class Jpeg {
         this.dequant = new short[4][64];
     }
 
-    void fetch() throws IOException {
-        inputBufferValid = 0;   // in case of exception
-        inputBufferPos = 0;
+    public boolean isIgnoreIOerror() {
+        return ignoreIOerror;
+    }
 
-        inputBufferValid = is.read(inputBuffer);
+    public void setIgnoreIOerror(boolean ignoreIOerror) {
+        this.ignoreIOerror = ignoreIOerror;
+    }
 
-        if(inputBufferValid <= 0) {
-            inputBufferValid = 0;
-            throw new EOFException();
+    private void fetch() throws IOException {
+        try {
+            inputBufferPos = 0;
+            inputBufferValid = is.read(inputBuffer);
+            
+            if(inputBufferValid <= 0) {
+                throw new EOFException();
+            }
+        } catch (IOException ex) {
+            inputBufferValid = 2;
+            inputBuffer[0] = (byte)0xFF;
+            inputBuffer[1] = (byte)0xD9;    // DOI
+
+            if(!ignoreIOerror) {
+                throw ex;
+            }
         }
     }
 
-    void read(byte[] buf, int off, int len) throws IOException {
+    private void read(byte[] buf, int off, int len) throws IOException {
         while(len > 0) {
             int avail = inputBufferValid - inputBufferPos;
             if(avail == 0) {
@@ -115,19 +131,19 @@ public class Jpeg {
         }
     }
 
-    int getU8() throws IOException {
+    private int getU8() throws IOException {
         if(inputBufferPos == inputBufferValid) {
             fetch();
         }
         return inputBuffer[inputBufferPos++] & 255;
     }
 
-    int getU16() throws IOException {
+    private int getU16() throws IOException {
         int t = getU8();
         return (t << 8) | getU8();
     }
 
-    void skip(int amount) throws IOException {
+    private void skip(int amount) throws IOException {
         while(amount > 0) {
             int inputBufferRemaining = inputBufferValid - inputBufferPos;
             if(amount > inputBufferRemaining) {
@@ -140,7 +156,7 @@ public class Jpeg {
         }
     }
 
-    void growBufferCheckMarker() throws IOException {
+    private void growBufferCheckMarker() throws IOException {
         int c = getU8();
         if(c != 0) {
             marker = c;
@@ -148,7 +164,7 @@ public class Jpeg {
         }
     }
     
-    void growBufferUnsafe() throws IOException {
+    private void growBufferUnsafe() throws IOException {
         do {
             int b = 0;
             if(!nomore) {
@@ -162,7 +178,7 @@ public class Jpeg {
         } while(codeBits <= 24);
     }
 
-    int decode(Huffman h) throws IOException {
+    private int decode(Huffman h) throws IOException {
         if(codeBits < 16) {
             growBufferUnsafe();
         }
@@ -201,7 +217,7 @@ public class Jpeg {
         return h.values[c] & 255;
     }
 
-    int extendReceive(int n) throws IOException {
+    private int extendReceive(int n) throws IOException {
         if(codeBits < n) {
             growBufferUnsafe();
         }
@@ -216,21 +232,7 @@ public class Jpeg {
         return k;
     }
 
-    static final byte dezigzag[] = {
-        0,  1,  8, 16,  9,  2,  3, 10,
-       17, 24, 32, 25, 18, 11,  4,  5,
-       12, 19, 26, 33, 40, 48, 41, 34,
-       27, 20, 13,  6,  7, 14, 21, 28,
-       35, 42, 49, 56, 57, 50, 43, 36,
-       29, 22, 15, 23, 30, 37, 44, 51,
-       58, 59, 52, 45, 38, 31, 39, 46,
-       53, 60, 61, 54, 47, 55, 62, 63,
-       // let corrupt input sample past end
-       63, 63, 63, 63, 63, 63, 63, 63,
-       63, 63, 63, 63, 63, 63, 63
-    };
-
-    void decodeBlock(short[] data, Component c) throws IOException {
+    private void decodeBlock(short[] data, Component c) throws IOException {
         Arrays.fill(data, (short)0);
 
         int t = decode(huffDC[c.hd]);
@@ -611,4 +613,17 @@ public class Jpeg {
         }
         return true;
     }
+
+    static final char dezigzag[] = (
+        "\0\1\10\20\11\2\3\12" +
+        "\21\30\40\31\22\13\4\5" +
+        "\14\23\32\41\50\60\51\42" +
+        "\33\24\15\6\7\16\25\34" +
+        "\43\52\61\70\71\62\53\44" +
+        "\35\26\17\27\36\45\54\63" +
+        "\72\73\64\55\46\37\47\56" +
+        "\65\74\75\66\57\67\76\77" +
+        "\77\77\77\77\77\77\77\77" +
+        "\77\77\77\77\77\77\77").toCharArray();
+    
 }

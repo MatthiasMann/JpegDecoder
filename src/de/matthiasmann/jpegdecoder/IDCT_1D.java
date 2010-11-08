@@ -57,7 +57,7 @@ public class IDCT_1D {
     private static final int C10 = f2f(-1.961570560);
     private static final int C11 = f2f(-0.390180644);
 
-    void compute(int s0, int s1, int s2, int s3, int s4, int s5, int s6, int s7) {
+    final void compute(int s0, int s1, int s2, int s3, int s4, int s5, int s6, int s7) {
         int p1, p2, p3, p4, p5;
 
         p1 = (s2+s6) * C0;
