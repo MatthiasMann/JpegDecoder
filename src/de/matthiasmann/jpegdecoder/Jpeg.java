@@ -182,20 +182,24 @@ public class Jpeg {
         if(codeBits < 16) {
             growBufferUnsafe();
         }
-        int c = (codeBuffer >>> (32 - Huffman.FAST_BITS)) & Huffman.FAST_MASK;
-        int k = h.fast[c] & 255;
+        int k = h.fast[codeBuffer >>> (32 - Huffman.FAST_BITS)] & 255;
         if(k < 0xFF) {
             int s = h.size[k];
+            /*
             if(s > codeBits) {
                 return -1;
             }
+            */
             codeBuffer <<= s;
             codeBits    -= s;
             return h.values[k] & 255;
         }
+        return decodeSlow(h);
+    }
 
+    private int decodeSlow(Huffman h) throws IOException {
         int temp = codeBuffer >>> 16;
-        k = Huffman.FAST_BITS + 1;
+        int k = Huffman.FAST_BITS + 1;
 
         while(temp >= h.maxCode[k]) {
             k++;
@@ -205,12 +209,13 @@ public class Jpeg {
             codeBits -= 16;
             return -1;
         }
-
+        /*
         if(k > codeBits) {
             return -1;
         }
+        */
 
-        c = ((codeBuffer >>> (32 - k)) & ((1 << k) - 1)) + h.delta[k];
+        int c = (codeBuffer >>> (32 - k)) + h.delta[k];
         codeBuffer <<= k;
         codeBits    -= k;
 
@@ -259,18 +264,15 @@ public class Jpeg {
             if(rs < 0) {
                 throwBadHuffmanCode();
             }
+            k += rs >> 4;
             int s = rs & 15;
             if(s != 0) {
-                k += rs >> 4;
                 int v = extendReceive(s) * (dq[k] & 0xFF);
-                data[dezigzag[k++]] = (short)v;
-            } else {
-                k += 16;
-                if(rs != 0xF0) {
-                    break;
-                }
+                data[dezigzag[k]] = (short)v;
+            } else if(rs != 0xF0) {
+                break;
             }
-        } while(k < 64);
+        } while(++k < 64);
     }
 
     private static void throwBadHuffmanCode() throws IOException {
