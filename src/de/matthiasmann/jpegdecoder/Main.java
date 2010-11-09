@@ -38,7 +38,13 @@ public class Main {
             System.out.println("Load in " + (end - start + 999)/1000 + " us");
         }
 
-        for(Component c : jpeg.components) {
+        int width = jpeg.getImageWidth();
+        int height = jpeg.getImageHeight();
+
+        System.out.println("width="+width+" height="+height);
+
+        for(int i=0 ; i<jpeg.getNumComponents() ; i++) {
+            Component c = jpeg.getComponent(i);
             FileOutputStream fos = new FileOutputStream("bla"+c.id+".tga");
             fos.write(new byte[] {
                 0, 0, 3,
@@ -46,8 +52,8 @@ public class Main {
                 0, 0, 0, 0,
                 (byte)(c.outStride),
                 (byte)(c.outStride >> 8),
-                (byte)(c.y),
-                (byte)(c.y >> 8),
+                (byte)(c.height),
+                (byte)(c.height >> 8),
                 8, 32
             });
             fos.getChannel().write(c.out);

@@ -40,12 +40,6 @@ import java.util.Arrays;
  * @author Matthias Mann
  */
 public class Jpeg {
-
-    enum SCAN {
-        LOAD,
-        TYPE,
-        HEADER
-    }
     
     static final int MARKER_NONE = 0xFF;
     
@@ -55,24 +49,25 @@ public class Jpeg {
     private int inputBufferValid;
     private boolean ignoreIOerror;
 
-    final IDCT_2D idct2D;
-    final short[] data;
-    final Huffman[] huffDC;
-    final Huffman[] huffAC;
-    final byte[][] dequant;
+    private boolean headerDecoded;
+    
+    private final IDCT_2D idct2D;
+    private final short[] data;
+    private final Huffman[] huffmanTables;
+    private final byte[][] dequant;
 
-    Component[] components;
-    Component[] order;
+    private Component[] components;
+    private Component[] order;
     
     int codeBuffer;
     int codeBits;
     int marker = MARKER_NONE;
     int restartInterval;
     int todo;
-    int mcuX;
-    int mcuY;
-    int imgX;
-    int imgY;
+    int mcuCountX;
+    int mcuCountY;
+    int imageWidth;
+    int imageHeight;
     int imgHMax;
     int imgVMax;
 
@@ -84,8 +79,7 @@ public class Jpeg {
         
         this.idct2D = new IDCT_2D();
         this.data = new short[64];
-        this.huffDC = new Huffman[4];
-        this.huffAC = new Huffman[4];
+        this.huffmanTables = new Huffman[8];
         this.dequant = new byte[4][64];
     }
 
@@ -95,6 +89,65 @@ public class Jpeg {
 
     public void setIgnoreIOerror(boolean ignoreIOerror) {
         this.ignoreIOerror = ignoreIOerror;
+    }
+
+    public void decodeJpegHeader() throws IOException {
+        if(!headerDecoded) {
+            headerDecoded = true;
+
+            int m = getMarker();
+            if(m != 0xD8) {
+                throw new IOException("no SOI");
+            }
+            m = getMarker();
+            while(m != 0xC0 && m != 0xC1) { // SOF
+                processMarker(m);
+                m = getMarker();
+                while(m == MARKER_NONE) {
+                    m = getMarker();
+                }
+            }
+
+            imageWidth();
+        }
+    }
+
+
+    public int getImageWidth() {
+        ensureHeaderDecoded();
+        return imageWidth;
+    }
+
+    public int getImageHeight() {
+        ensureHeaderDecoded();
+        return imageHeight;
+    }
+
+    public int getNumComponents() {
+        ensureHeaderDecoded();
+        return components.length;
+    }
+
+    public Component getComponent(int idx) {
+        ensureHeaderDecoded();
+        return components[idx];
+    }
+    
+    public void decodeJpegImage() throws IOException {
+        decodeJpegHeader();
+        int m = getMarker();
+        while(m != 0xD9) {  // EOI
+            if(m == 0xDA) { // SOS
+                processScanHeader();
+                parseEntropyCodedData();
+                if(marker == MARKER_NONE) {
+                    skipPadding();
+                }
+            } else {
+                processMarker(m);
+            }
+            m = getMarker();
+        }
     }
 
     private void fetch() throws IOException {
@@ -302,8 +355,8 @@ public class Jpeg {
     }
 
     private void parseEntropyCodedDataPlanar(Component c) throws IOException {
-        int w = (c.x + 7) >> 3;
-        int h = (c.y + 7) >> 3;
+        int w = (c.width + 7) >> 3;
+        int h = (c.height + 7) >> 3;
 
         for(int j=0 ; j<h ; j++) {
             int outPos = c.outPos + c.outStride*j*8;
@@ -324,14 +377,14 @@ public class Jpeg {
     }
 
     private void parseEntropyCodedDataMCU() throws IOException {
-        for(int j=0 ; j<mcuY ; j++) {
-            for(int i=0 ; i<mcuX ; i++) {
+        for(int j=0 ; j<mcuCountY ; j++) {
+            for(int i=0 ; i<mcuCountX ; i++) {
                 for(Component c : order) {
-                    int outPosY = c.outPos + i*c.h*8 + j*c.v*8*c.outStride;
+                    int outPosY = c.outPos + i*c.blocksPerMCUHorz*8 + j*c.blocksPerMCUVert*8*c.outStride;
 
-                    for(int y=0 ; y<c.v ; y++,outPosY+=8*c.outStride) {
+                    for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*c.outStride) {
                         int outPos = outPosY;
-                        for(int x=0 ; x<c.h ; x++,outPos+=8) {
+                        for(int x=0 ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
                             try {
                                 decodeBlock(data, c);
                             } catch (ArrayIndexOutOfBoundsException ex) {
@@ -359,7 +412,7 @@ public class Jpeg {
         }
     }
 
-    boolean processMarker(int marker) throws IOException {
+    private void processMarker(int marker) throws IOException {
         switch(marker) {
             case MARKER_NONE:
                 throw new IOException("Expected marker");
@@ -372,11 +425,11 @@ public class Jpeg {
                     throw new IOException("bad DRI length");
                 }
                 restartInterval = getU16();
-                return true;
+                break;
 
             case 0xDB: {    // DQT - define dequant table
                 int l = getU16() - 2;
-                while(l > 0) {
+                while(l >= 65) {
                     int q = getU8();
                     int p = q >> 4;
                     int t = q & 15;
@@ -389,12 +442,15 @@ public class Jpeg {
                     read(dequant[t], 0, 64);
                     l -= 65;
                 }
-                return l == 0;
+                if(l != 0) {
+                    throw new IOException("bad DQT length");
+                }
+                break;
             }
 
             case 0xC4: {    // DHT - define huffman table
                 int l = getU16() - 2;
-                while(l > 0) {
+                while(l > 17) {
                     int q = getU8();
                     int tc = q >> 4;
                     int th = q & 15;
@@ -406,28 +462,62 @@ public class Jpeg {
                         tmp[i] = getU8();
                     }
                     Huffman h = new Huffman(tmp);
-                    int m = h.values.length;
+                    int m = h.getNumSymbols();
                     l -= 17 + m;
-                    read(h.values, 0, m);
-                    if(tc == 0) {
-                        huffDC[th] = h;
-                    } else {
-                        huffAC[th] = h;
+                    if(l < 0) {
+                        throw new IOException("bad DHT length");
                     }
+                    read(h.values, 0, m);
+                    huffmanTables[tc*4 + th] = h;
                 }
-                return l == 0;
+                if(l != 0) {
+                    throw new IOException("bad DHT length");
+                }
+                break;
+            }
+
+            case 0xE0:
+            case 0xE1:
+            case 0xE2:
+            case 0xE3:
+            case 0xE4:
+            case 0xE5:
+            case 0xE6:
+            case 0xE7:
+            case 0xE8:
+            case 0xE9:
+            case 0xEA:
+            case 0xEB:
+            case 0xEC:
+            case 0xED:
+            case 0xEE:
+            case 0xEF:
+            case 0xFE: {
+                int l = getU16();
+                if(l < 2) {
+                    throw new IOException("bad length");
+                }
+                skip(l - 2);
+                break;
             }
 
             default:
-                if((marker >= 0xE0 && marker <= 0xEF) || marker == 0xFE) {
-                    skip(getU16() - 2);
-                    return true;
-                }
-                return false;
+                throw new IOException("Unknown marker: " + Integer.toHexString(marker));
         }
     }
 
-    boolean processScanHeader() throws IOException {
+    private void skipPadding() throws IOException {
+        int x;
+        do {
+            x = getU8();
+        } while(x == 0);
+
+        if(x == 0xFF) {
+            marker = getU8();
+        }
+    }
+
+    private void processScanHeader() throws IOException {
         int ls = getU16();
         int scanN = getU8();
 
@@ -449,14 +539,17 @@ public class Jpeg {
                     if(hd > 3 || ha > 3) {
                         throw new IOException("bad huffman table index");
                     }
-                    c.huffDC = huffDC[ha];
-                    c.huffAC = huffAC[ha];
+                    c.huffDC = huffmanTables[hd];
+                    c.huffAC = huffmanTables[ha + 4];
+                    if(c.huffDC == null || c.huffAC == null) {
+                        throw new IOException("bad huffman table index");
+                    }
                     order[i] = c;
                     break;
                 }
             }
             if(order[i] == null) {
-                return false;
+                throw new IOException("unknown color component");
             }
         }
         
@@ -467,11 +560,9 @@ public class Jpeg {
         if(getU8() != 0) {
             throw new IOException("bad SOS");
         }
-
-        return true;
     }
 
-    boolean processFrameHeader(SCAN scan) throws IOException {
+    private void imageWidth() throws IOException {
         int lf = getU16();
         if(lf < 11) {
             throw new IOException("bad SOF length");
@@ -481,10 +572,10 @@ public class Jpeg {
             throw new IOException("only 8 bit JPEG supported");
         }
 
-        imgY = getU16();
-        imgX = getU16();
+        imageHeight = getU16();
+        imageWidth  = getU16();
 
-        if(imgX <= 0 || imgY <= 0) {
+        if(imageWidth <= 0 || imageHeight <= 0) {
             throw new IOException("Invalid image size");
         }
 
@@ -497,19 +588,22 @@ public class Jpeg {
             throw new IOException("bad SOF length");
         }
 
+        int hMax = 1;
+        int vMax = 1;
+
         components = new Component[numComps];
         for(int i=0 ; i<numComps ; i++) {
             Component c = new Component(getU8());
             int q = getU8();
             int tq = getU8();
 
-            c.h = q >> 4;
-            c.v = q & 15;
+            c.blocksPerMCUHorz = q >> 4;
+            c.blocksPerMCUVert = q & 15;
 
-            if(c.h == 0 || c.h > 4) {
+            if(c.blocksPerMCUHorz == 0 || c.blocksPerMCUHorz > 4) {
                 throw new IOException("bad H");
             }
-            if(c.v == 0 || c.v > 4) {
+            if(c.blocksPerMCUVert == 0 || c.blocksPerMCUVert > 4) {
                 throw new IOException("bad V");
             }
             if(tq > 3) {
@@ -517,19 +611,10 @@ public class Jpeg {
             }
             c.dequant = dequant[tq];
 
+            hMax = Math.max(hMax, c.blocksPerMCUHorz);
+            vMax = Math.max(vMax, c.blocksPerMCUVert);
+
             components[i] = c;
-        }
-
-        if(scan != SCAN.LOAD) {
-            return true;
-        }
-
-        int hMax = 1;
-        int vMax = 1;
-
-        for(int i=0 ; i<numComps ; i++) {
-            hMax = Math.max(hMax, components[i].h);
-            vMax = Math.max(vMax, components[i].v);
         }
 
         int mcuW = hMax * 8;
@@ -537,75 +622,24 @@ public class Jpeg {
 
         imgHMax = hMax;
         imgVMax = vMax;
-        mcuX = (imgX + mcuW - 1) / mcuW;
-        mcuY = (imgY + mcuH - 1) / mcuH;
+        mcuCountX = (imageWidth + mcuW - 1) / mcuW;
+        mcuCountY = (imageHeight + mcuH - 1) / mcuH;
 
         for(int i=0 ; i<numComps ; i++) {
             Component c = components[i];
-            c.x = (imgX * c.h + hMax - 1) / hMax;
-            c.y = (imgY * c.v + vMax - 1) / vMax;
-            c.outStride = mcuX * c.h * 8;
-            c.out = ByteBuffer.allocateDirect(c.outStride * mcuY * c.v * 8);
+            c.width = (imageWidth * c.blocksPerMCUHorz + hMax - 1) / hMax;
+            c.height = (imageHeight * c.blocksPerMCUVert + vMax - 1) / vMax;
+            c.minReqWidth = mcuCountX * c.blocksPerMCUHorz * 8;
+            c.minReqHeight = mcuCountY * c.blocksPerMCUVert * 8;
+            c.outStride = c.minReqWidth;
+            c.out = ByteBuffer.allocateDirect(c.outStride * c.minReqHeight);
         }
-
-        return true;
     }
 
-    boolean decodeJpegHeader(SCAN scan) throws IOException {
-        marker = MARKER_NONE;
-        int m = getMarker();
-        if(m != 0xD8) {
-            throw new IOException("no SOI");
+    private void ensureHeaderDecoded() throws IllegalStateException {
+        if(!headerDecoded) {
+            throw new IllegalStateException("need to decode header first");
         }
-        if(scan == SCAN.TYPE) {
-            return true;
-        }
-        m = getMarker();
-        while(m != 0xC0 && m != 0xC1) { // SOF
-            if(!processMarker(m)) {
-                return false;
-            }
-            m = getMarker();
-            while(m == MARKER_NONE) {
-                m = getMarker();
-            }
-        }
-        return processFrameHeader(scan);
-    }
-
-    boolean decodeJpegImage() throws IOException {
-        restartInterval = 0;
-        if(!decodeJpegHeader(SCAN.LOAD)) {
-            return false;
-        }
-        int m = getMarker();
-        while(m != 0xD9) {  // DOI
-            if(m == 0xDA) { // SOS
-                if(!processScanHeader()) {
-                    return false;
-                }
-                parseEntropyCodedData();
-                if(marker == MARKER_NONE) {
-                    try {
-                        for(;;) {
-                            int x = getU8();
-                            if(x == 0xFF) {
-                                marker = getU8();
-                                break;
-                            }
-                            if(x != 0) {
-                                return false;
-                            }
-                        }
-                    } catch (EOFException ex) {
-                    }
-                }
-            } else if(!processMarker(m)) {
-                return false;
-            }
-            m = getMarker();
-        }
-        return true;
     }
 
     static final char dezigzag[] = (

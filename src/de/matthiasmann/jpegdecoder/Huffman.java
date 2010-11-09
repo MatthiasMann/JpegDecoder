@@ -48,8 +48,14 @@ public class Huffman {
     final int[] delta;
 
     public Huffman(int[] count) throws IOException {
+        int numSymbols = 0;
+        for(int i=0 ; i<16 ; i++) {
+            numSymbols += count[i];
+        }
+
         fast = new byte[1 << FAST_BITS];
-        size = new byte[256];
+        values = new byte[numSymbols];
+        size = new byte[numSymbols];
         maxCode = new int[18];
         delta = new int[17];
 
@@ -65,10 +71,10 @@ public class Huffman {
         int k = 0;
         for(int c=0 ; i<=16 ; i++) {
             delta[i] = k - c;
-            if(size[k] == i) {
+            if(k < numSymbols && size[k] == i) {
                 do {
                     code[k++] = c++;
-                }while(size[k] == i);
+                }while(k < numSymbols && size[k] == i);
                 if(c-1 >= (1<<i)) {
                     throw new IOException("Bad code length");
                 }
@@ -77,8 +83,6 @@ public class Huffman {
             c <<= 1;
         }
         maxCode[i] = Integer.MAX_VALUE;
-
-        values = new byte[k];
 
         Arrays.fill(fast, (byte)-1);
         for(i=0 ; i<k ; i++) {
@@ -93,4 +97,7 @@ public class Huffman {
         }
     }
 
+    public int getNumSymbols() {
+        return values.length;
+    }
 }

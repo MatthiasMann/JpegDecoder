@@ -162,6 +162,62 @@ public class IDCT_2D {
         }
     }
 
+    public final void compute(byte[] out, int outPos, int outStride, short[] data) {
+        computeV(data);
+
+        final int[] tmp = tmp2D;
+        for(int i=0 ; i<64 ; i+=8) {
+            int s0 = tmp[i  ] + (257 << 4);
+            int s1 = tmp[i+1];
+            int s2 = tmp[i+2];
+            int s3 = tmp[i+3];
+            int s4 = tmp[i+4];
+            int s5 = tmp[i+5];
+            int s6 = tmp[i+6];
+            int s7 = tmp[i+7];
+
+            int p1, p2, p3, p4, p5;
+
+            p1 = (s2+s6)*C0;
+            p2 = (s0+s4) << 12;
+            p3 = (s0-s4) << 12;
+            p4 = p1 + s6*C1;
+            p5 = p1 + s2*C2;
+
+            int x0 = p2+p5;
+            int x3 = p2-p5;
+            int x1 = p3+p4;
+            int x2 = p3-p4;
+
+            p1 = s7+s1;
+            p2 = s5+s3;
+            p3 = s7+s3;
+            p4 = s5+s1;
+            p5 = (p3+p4)*C3;
+
+            p1 = p5 + p1*C8;
+            p2 = p5 + p2*C9;
+            p3 = p3*C10;
+            p4 = p4*C11;
+
+            int t0 = s7*C4 + p1 + p3;
+            int t1 = s5*C5 + p2 + p4;
+            int t2 = s3*C6 + p2 + p3;
+            int t3 = s1*C7 + p1 + p4;
+
+            out[outPos  ] = clampShift17(x0+t3);
+            out[outPos+7] = clampShift17(x0-t3);
+            out[outPos+1] = clampShift17(x1+t2);
+            out[outPos+6] = clampShift17(x1-t2);
+            out[outPos+2] = clampShift17(x2+t1);
+            out[outPos+5] = clampShift17(x2-t1);
+            out[outPos+3] = clampShift17(x3+t0);
+            out[outPos+4] = clampShift17(x3-t0);
+            
+            outPos += outStride;
+        }
+    }
+
     private static byte clampShift17(int x) {
         if(x < 0) {
             return 0;
