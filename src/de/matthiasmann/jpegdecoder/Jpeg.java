@@ -50,6 +50,9 @@ public class Jpeg {
     private boolean ignoreIOerror;
 
     private boolean headerDecoded;
+    private boolean insideSOS;
+    private boolean foundEOI;
+    private int currentMCURow;
     
     private final IDCT_2D idct2D;
     private final short[] data;
@@ -91,7 +94,7 @@ public class Jpeg {
         this.ignoreIOerror = ignoreIOerror;
     }
 
-    public void decodeJpegHeader() throws IOException {
+    public void decodeHeader() throws IOException {
         if(!headerDecoded) {
             headerDecoded = true;
 
@@ -132,21 +135,101 @@ public class Jpeg {
         ensureHeaderDecoded();
         return components[idx];
     }
+
+    public int getMCURowHeight() {
+        ensureHeaderDecoded();
+        return imgVMax * 8;
+    }
+
+    public int getNumMCURows() {
+        return mcuCountY;
+    }
     
-    public void decodeJpegImage() throws IOException {
-        decodeJpegHeader();
+    public boolean startDecode() throws IOException {
+        if(insideSOS) {
+            throw new IllegalStateException("decode already started");
+        }
+        if(foundEOI) {
+            return false;
+        }
+
+        decodeHeader();
         int m = getMarker();
         while(m != 0xD9) {  // EOI
             if(m == 0xDA) { // SOS
                 processScanHeader();
-                parseEntropyCodedData();
-                if(marker == MARKER_NONE) {
-                    skipPadding();
-                }
+                insideSOS = true;
+                currentMCURow = 0;
+                reset();
+                return true;
             } else {
                 processMarker(m);
             }
             m = getMarker();
+        }
+
+        foundEOI = true;
+        return false;
+    }
+    
+    public void decodeRAW(ByteBuffer[] buffer, int[] strides, int numMCURows) throws IOException {
+        if(!insideSOS) {
+            throw new IllegalStateException("decode not started");
+        }
+
+        if(numMCURows <= 0 || currentMCURow + numMCURows > mcuCountY) {
+            throw new IllegalArgumentException("numMCURows");
+        }
+        
+        int scanN = order.length;
+        if(scanN != components.length) {
+            throw new UnsupportedOperationException("for raw decode all components need to be decoded at once");
+        }
+        if(scanN > buffer.length || scanN > strides.length) {
+            throw new IllegalArgumentException("not enough buffers");
+        }
+
+        for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+            order[compIdx].outPos = buffer[compIdx].position();
+        }
+
+        for(int j=0 ; j<numMCURows ; j++) {
+            ++currentMCURow;
+            for(int i=0 ; i<mcuCountX ; i++) {
+                for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+                    Component c = order[compIdx];
+                    int outStride = strides[compIdx];
+                    int outPosY = c.outPos + 8*(i*c.blocksPerMCUHorz + j*c.blocksPerMCUVert*outStride);
+
+                    for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*outStride) {
+                        for(int x=0,outPos=outPosY ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
+                            try {
+                                decodeBlock(data, c);
+                            } catch (ArrayIndexOutOfBoundsException ex) {
+                                throwBadHuffmanCode();
+                            }
+                            idct2D.compute(buffer[compIdx], outPos, outStride, data);
+                        }
+                    }
+                }
+                if(--todo <= 0) {
+                    if(!checkRestart()) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if(currentMCURow >= mcuCountY) {
+            insideSOS = false;
+            if(marker == MARKER_NONE) {
+                skipPadding();
+            }
+        }
+
+        for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+            Component c = order[compIdx];
+            buffer[compIdx].position(c.outPos + numMCURows * c.blocksPerMCUVert * 8 * strides[compIdx]);
         }
     }
 
@@ -161,7 +244,7 @@ public class Jpeg {
         } catch (IOException ex) {
             inputBufferValid = 2;
             inputBuffer[0] = (byte)0xFF;
-            inputBuffer[1] = (byte)0xD9;    // DOI
+            inputBuffer[1] = (byte)0xD9;    // EOI
 
             if(!ignoreIOerror) {
                 throw ex;
@@ -354,65 +437,16 @@ public class Jpeg {
         return false;
     }
 
-    private void parseEntropyCodedDataPlanar(Component c) throws IOException {
-        int w = (c.width + 7) >> 3;
-        int h = (c.height + 7) >> 3;
-
-        for(int j=0 ; j<h ; j++) {
-            int outPos = c.outPos + c.outStride*j*8;
-            for(int i=0 ; i<w ; i++,outPos+=8) {
-                try {
-                    decodeBlock(data, c);
-                } catch (ArrayIndexOutOfBoundsException ex) {
-                    throwBadHuffmanCode();
-                }
-                idct2D.compute(c.out, outPos, c.outStride, data);
-                if(--todo <= 0) {
-                    if(!checkRestart()) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    private void parseEntropyCodedDataMCU() throws IOException {
-        for(int j=0 ; j<mcuCountY ; j++) {
-            for(int i=0 ; i<mcuCountX ; i++) {
-                for(Component c : order) {
-                    int outPosY = c.outPos + i*c.blocksPerMCUHorz*8 + j*c.blocksPerMCUVert*8*c.outStride;
-
-                    for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*c.outStride) {
-                        int outPos = outPosY;
-                        for(int x=0 ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
-                            try {
-                                decodeBlock(data, c);
-                            } catch (ArrayIndexOutOfBoundsException ex) {
-                                throwBadHuffmanCode();
-                            }
-                            idct2D.compute(c.out, outPos, c.outStride, data);
-                        }
-                    }
-                }
-                if(--todo <= 0) {
-                    if(!checkRestart()) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    private void parseEntropyCodedData() throws IOException {
-        reset();
-        if(order.length == 1) {
-            parseEntropyCodedDataPlanar(order[0]);
-        } else {
-            parseEntropyCodedDataMCU();
-        }
-    }
-
     private void processMarker(int marker) throws IOException {
+        if(marker >= 0xE0 && (marker <= 0xEF || marker == 0xFE)) {
+            int l = getU16() - 2;
+            if(l < 0) {
+                throw new IOException("bad length");
+            }
+            skip(l);
+            return;
+        }
+
         switch(marker) {
             case MARKER_NONE:
                 throw new IOException("Expected marker");
@@ -475,32 +509,7 @@ public class Jpeg {
                 }
                 break;
             }
-
-            case 0xE0:
-            case 0xE1:
-            case 0xE2:
-            case 0xE3:
-            case 0xE4:
-            case 0xE5:
-            case 0xE6:
-            case 0xE7:
-            case 0xE8:
-            case 0xE9:
-            case 0xEA:
-            case 0xEB:
-            case 0xEC:
-            case 0xED:
-            case 0xEE:
-            case 0xEF:
-            case 0xFE: {
-                int l = getU16();
-                if(l < 2) {
-                    throw new IOException("bad length");
-                }
-                skip(l - 2);
-                break;
-            }
-
+            
             default:
                 throw new IOException("Unknown marker: " + Integer.toHexString(marker));
         }
@@ -631,8 +640,6 @@ public class Jpeg {
             c.height = (imageHeight * c.blocksPerMCUVert + vMax - 1) / vMax;
             c.minReqWidth = mcuCountX * c.blocksPerMCUHorz * 8;
             c.minReqHeight = mcuCountY * c.blocksPerMCUVert * 8;
-            c.outStride = c.minReqWidth;
-            c.out = ByteBuffer.allocateDirect(c.outStride * c.minReqHeight);
         }
     }
 

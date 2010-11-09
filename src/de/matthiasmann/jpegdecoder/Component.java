@@ -29,8 +29,6 @@
  */
 package de.matthiasmann.jpegdecoder;
 
-import java.nio.ByteBuffer;
-
 /**
  *
  * @author Matthias Mann
@@ -49,13 +47,14 @@ public class Component {
     int height;
     int minReqWidth;
     int minReqHeight;
-
-    ByteBuffer out;
     int outPos;
-    int outStride;
 
     Component(int id) {
         this.id = id;
+    }
+
+    public int getID() {
+        return id;
     }
 
     public int getMinReqWidth() {
