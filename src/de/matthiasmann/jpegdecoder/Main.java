@@ -77,6 +77,39 @@ public class Main {
             fos.getChannel().write(buffer[i]);
             fos.close();
         }
+
+
+        FileInputStream is = new FileInputStream("e:\\Saturn_Anzeige.jpg");
+        try {
+            jpeg = new Jpeg(is);
+            try {
+                jpeg.decodeHeader();
+                int rgbStride = jpeg.getImageWidth() * 4;
+                ByteBuffer buf = ByteBuffer.allocateDirect(rgbStride * jpeg.getImageHeight());
+
+                jpeg.startDecode();
+                jpeg.decodeRGB(buf, rgbStride, jpeg.getNumMCURows());
+
+                FileOutputStream fos = new FileOutputStream("rgb.tga");
+                fos.write(new byte[] {
+                    0, 0, 2,
+                    0, 0, 0, 0, 32,
+                    0, 0, 0, 0,
+                    (byte)(jpeg.getImageWidth()),
+                    (byte)(jpeg.getImageWidth() >> 8),
+                    (byte)(jpeg.getImageHeight()),
+                    (byte)(jpeg.getImageHeight() >> 8),
+                    32, 32
+                });
+                buf.flip();
+                fos.getChannel().write(buf);
+                fos.close();
+            } catch(IOException ex) {
+                ex.printStackTrace();
+            }
+        } finally {
+            is.close();
+        }
     }
 
 }

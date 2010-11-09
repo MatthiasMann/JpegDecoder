@@ -62,20 +62,21 @@ public class Jpeg {
     private Component[] components;
     private Component[] order;
     
-    int codeBuffer;
-    int codeBits;
-    int marker = MARKER_NONE;
-    int restartInterval;
-    int todo;
-    int mcuCountX;
-    int mcuCountY;
-    int imageWidth;
-    int imageHeight;
-    int imgHMax;
-    int imgVMax;
+    private int codeBuffer;
+    private int codeBits;
+    private int marker = MARKER_NONE;
+    private int restartInterval;
+    private int todo;
+    private int mcuCountX;
+    private int mcuCountY;
+    private int imageWidth;
+    private int imageHeight;
+    private int imgHMax;
+    private int imgVMax;
+    private boolean nomore;
 
-    boolean nomore;
-
+    private byte[][] decodeTmp;
+    
     public Jpeg(InputStream is) {
         this.is = is;
         this.inputBuffer = new byte[4096];
@@ -171,6 +172,76 @@ public class Jpeg {
         foundEOI = true;
         return false;
     }
+
+    public void decodeRGB(ByteBuffer dst, int stride, int numMCURows) throws IOException {
+        if(!insideSOS) {
+            throw new IllegalStateException("decode not started");
+        }
+
+        if(numMCURows <= 0 || currentMCURow + numMCURows > mcuCountY) {
+            throw new IllegalArgumentException("numMCURows");
+        }
+
+        if(order.length != 3) {
+            throw new UnsupportedOperationException("RGB decode only supported for 3 channels");
+        }
+
+        if(decodeTmp == null) {
+            decodeTmp = new byte[3][];
+        }
+
+        for(int compIdx=0 ; compIdx<3 ; compIdx++) {
+            Component c = order[compIdx];
+            int reqSize = c.minReqWidth * c.blocksPerMCUVert * 8;
+            if(decodeTmp[compIdx] == null || decodeTmp[compIdx].length < reqSize) {
+                decodeTmp[compIdx] = new byte[reqSize];
+            }
+        }
+
+        for(int j=0 ; j<numMCURows ; j++) {
+            ++currentMCURow;
+            for(int i=0 ; i<mcuCountX ; i++) {
+                for(int compIdx=0 ; compIdx<3 ; compIdx++) {
+                    Component c = order[compIdx];
+                    int outStride = c.minReqWidth;
+                    int outPosY = 8*i*c.blocksPerMCUHorz;
+
+                    for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*outStride) {
+                        for(int x=0,outPos=outPosY ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
+                            try {
+                                decodeBlock(data, c);
+                            } catch (ArrayIndexOutOfBoundsException ex) {
+                                throwBadHuffmanCode();
+                            }
+                            idct2D.compute(decodeTmp[compIdx], outPos, outStride, data);
+                        }
+                    }
+                }
+                if(--todo <= 0) {
+                    if(!checkRestart()) {
+                        break;
+                    }
+                }
+            }
+
+            // TODO: upsample
+            
+            int outPos = dst.position();
+            int n = imgVMax*8;
+            n = Math.min(imageHeight - (currentMCURow-1)*n, n);
+            for(int i=0 ; i<n ; i++) {
+                YUVtoRGB(dst, outPos, decodeTmp[0], decodeTmp[1], decodeTmp[2], i*order[0].minReqWidth, imageWidth);
+                outPos += stride;
+            }
+            dst.position(outPos);
+
+            if(marker != MARKER_NONE) {
+                break;
+            }
+        }
+        
+        checkDecodeEnd();
+    }
     
     public void decodeRAW(ByteBuffer[] buffer, int[] strides, int numMCURows) throws IOException {
         if(!insideSOS) {
@@ -183,7 +254,7 @@ public class Jpeg {
         
         int scanN = order.length;
         if(scanN != components.length) {
-            throw new UnsupportedOperationException("for raw decode all components need to be decoded at once");
+            throw new UnsupportedOperationException("for RAW decode all components need to be decoded at once");
         }
         if(scanN > buffer.length || scanN > strides.length) {
             throw new IllegalArgumentException("not enough buffers");
@@ -193,7 +264,7 @@ public class Jpeg {
             order[compIdx].outPos = buffer[compIdx].position();
         }
 
-        for(int j=0 ; j<numMCURows ; j++) {
+        outer: for(int j=0 ; j<numMCURows ; j++) {
             ++currentMCURow;
             for(int i=0 ; i<mcuCountX ; i++) {
                 for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
@@ -214,22 +285,26 @@ public class Jpeg {
                 }
                 if(--todo <= 0) {
                     if(!checkRestart()) {
-                        break;
+                        break outer;
                     }
                 }
             }
         }
 
-        if(currentMCURow >= mcuCountY) {
-            insideSOS = false;
-            if(marker == MARKER_NONE) {
-                skipPadding();
-            }
-        }
+        checkDecodeEnd();
 
         for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
             Component c = order[compIdx];
             buffer[compIdx].position(c.outPos + numMCURows * c.blocksPerMCUVert * 8 * strides[compIdx]);
+        }
+    }
+
+    private void checkDecodeEnd() throws IOException {
+        if(currentMCURow >= mcuCountY || marker != MARKER_NONE) {
+            insideSOS = false;
+            if(marker == MARKER_NONE) {
+                skipPadding();
+            }
         }
     }
 
@@ -361,6 +436,8 @@ public class Jpeg {
     private void decodeBlock(short[] data, Component c) throws IOException {
         Arrays.fill(data, (short)0);
 
+        final byte[] dq = c.dequant;
+
         {
             int t = decode(c.huffDC);
             int dc = c.dcPred;
@@ -369,11 +446,10 @@ public class Jpeg {
                 c.dcPred = dc;
             }
 
-            data[0] = (short)dc;
+            data[0] = (short)(dc * (dq[0] & 0xFF));
         }
 
         final Huffman hac = c.huffAC;
-        final byte[] dq = c.dequant;
 
         int k = 1;
         do {
@@ -647,6 +723,46 @@ public class Jpeg {
         if(!headerDecoded) {
             throw new IllegalStateException("need to decode header first");
         }
+    }
+
+    private static void YUVtoRGB(byte[] out, int outPos, byte[] inY, byte[] inU, byte[] inV, int inPos, int count) {
+        do {
+            int y = (inY[inPos] & 255);
+            int u = (inU[inPos] & 255) - 128;
+            int v = (inV[inPos] & 255) - 128;
+            int r = y + ((32768 + u*91881           ) >> 16);
+            int g = y + ((32768 - u*46802 - v* 22554) >> 16);
+            int b = y + ((32768           + v*116130) >> 16);
+            if(r > 255) r = 255; else if(r < 0) r = 0;
+            if(g > 255) g = 255; else if(g < 0) g = 0;
+            if(b > 255) b = 255; else if(b < 0) b = 0;
+            out[outPos+0] = (byte)r;
+            out[outPos+1] = (byte)g;
+            out[outPos+2] = (byte)b;
+            out[outPos+3] = (byte)255;
+            outPos += 4;
+            inPos++;
+        } while(--count > 0);
+    }
+
+    private static void YUVtoRGB(ByteBuffer out, int outPos, byte[] inY, byte[] inU, byte[] inV, int inPos, int count) {
+        do {
+            int y = (inY[inPos] & 255);
+            int u = (inU[inPos] & 255) - 128;
+            int v = (inV[inPos] & 255) - 128;
+            int r = y + ((32768 + u*91881           ) >> 16);
+            int g = y + ((32768 - u*46802 - v* 22554) >> 16);
+            int b = y + ((32768           + v*116130) >> 16);
+            if(r > 255) r = 255; else if(r < 0) r = 0;
+            if(g > 255) g = 255; else if(g < 0) g = 0;
+            if(b > 255) b = 255; else if(b < 0) b = 0;
+            out.put(outPos+0, (byte)r);
+            out.put(outPos+1, (byte)g);
+            out.put(outPos+2, (byte)b);
+            out.put(outPos+3, (byte)255);
+            outPos += 4;
+            inPos++;
+        } while(--count > 0);
     }
 
     static final char dezigzag[] = (
