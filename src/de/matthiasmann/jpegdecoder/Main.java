@@ -31,7 +31,7 @@ public class Main {
     }
 
     private static void benchmarkRAW() throws IOException {
-        Jpeg jpeg = null;
+        JPEGDecoder jpeg = null;
         ByteBuffer[] buffer = null;
         int[] stride = null;
 
@@ -39,7 +39,7 @@ public class Main {
             long start = System.nanoTime();
             FileInputStream is = new FileInputStream("e:\\Saturn_Anzeige.jpg");
             try {
-                jpeg = new Jpeg(is);
+                jpeg = new JPEGDecoder(is);
                 try {
                     jpeg.decodeHeader();
                     if(buffer == null) {
@@ -93,7 +93,7 @@ public class Main {
     private static void testRGB() throws IOException {
         FileInputStream is = new FileInputStream("e:\\Saturn_Anzeige.jpg");
         try {
-            Jpeg jpeg = new Jpeg(is);
+            JPEGDecoder jpeg = new JPEGDecoder(is);
             try {
                 jpeg.decodeHeader();
                 int rgbStride = jpeg.getImageWidth() * 4;

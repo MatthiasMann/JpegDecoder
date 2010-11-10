@@ -35,7 +35,7 @@ import java.nio.ByteBuffer;
  *
  * @author Matthias Mann
  */
-public class IDCT_2D {
+class IDCT_2D {
 
     final int[] tmp2D = new int[64];
 

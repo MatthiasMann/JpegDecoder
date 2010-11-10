@@ -36,7 +36,7 @@ import java.util.Arrays;
  *
  * @author Matthias Mann
  */
-public class Huffman {
+class Huffman {
 
     static final int FAST_BITS = 9;
     static final int FAST_MASK = (1 << FAST_BITS) - 1;

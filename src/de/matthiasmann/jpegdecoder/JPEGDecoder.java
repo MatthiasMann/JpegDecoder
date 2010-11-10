@@ -39,7 +39,7 @@ import java.util.Arrays;
  *
  * @author Matthias Mann
  */
-public class Jpeg {
+public class JPEGDecoder {
     
     static final int MARKER_NONE = 0xFF;
     
@@ -78,7 +78,7 @@ public class Jpeg {
     private byte[][] decodeTmp;
     private byte[][] upsampleTmp;
     
-    public Jpeg(InputStream is) {
+    public JPEGDecoder(InputStream is) {
         this.is = is;
         this.inputBuffer = new byte[4096];
         
