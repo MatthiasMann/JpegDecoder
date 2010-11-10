@@ -48,6 +48,7 @@ public class Component {
     int minReqWidth;
     int minReqHeight;
     int outPos;
+    int upsampler;
 
     Component(int id) {
         this.id = id;

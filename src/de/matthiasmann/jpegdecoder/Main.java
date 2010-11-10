@@ -5,10 +5,16 @@
 
 package de.matthiasmann.jpegdecoder;
 
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
+import javax.swing.ImageIcon;
+import javax.swing.JOptionPane;
 
 /**
  *
@@ -20,6 +26,11 @@ public class Main {
      * @param args the command line arguments
      */
     public static void main(String[] args) throws IOException {
+        benchmarkRAW();
+        testRGB();
+    }
+
+    private static void benchmarkRAW() throws IOException {
         Jpeg jpeg = null;
         ByteBuffer[] buffer = null;
         int[] stride = null;
@@ -77,11 +88,12 @@ public class Main {
             fos.getChannel().write(buffer[i]);
             fos.close();
         }
+    }
 
-
+    private static void testRGB() throws IOException {
         FileInputStream is = new FileInputStream("e:\\Saturn_Anzeige.jpg");
         try {
-            jpeg = new Jpeg(is);
+            Jpeg jpeg = new Jpeg(is);
             try {
                 jpeg.decodeHeader();
                 int rgbStride = jpeg.getImageWidth() * 4;
@@ -104,6 +116,12 @@ public class Main {
                 buf.flip();
                 fos.getChannel().write(buf);
                 fos.close();
+
+                buf.rewind();
+                IntBuffer ib = buf.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+                BufferedImage img = new BufferedImage(jpeg.getImageWidth(), jpeg.getImageHeight(), BufferedImage.TYPE_INT_ARGB);
+                ib.get(((DataBufferInt)img.getRaster().getDataBuffer()).getData());
+                JOptionPane.showMessageDialog(null, new ImageIcon(img));
             } catch(IOException ex) {
                 ex.printStackTrace();
             }

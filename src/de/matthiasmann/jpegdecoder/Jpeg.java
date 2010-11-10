@@ -76,6 +76,7 @@ public class Jpeg {
     private boolean nomore;
 
     private byte[][] decodeTmp;
+    private byte[][] upsampleTmp;
     
     public Jpeg(InputStream is) {
         this.is = is;
@@ -186,51 +187,25 @@ public class Jpeg {
             throw new UnsupportedOperationException("RGB decode only supported for 3 channels");
         }
 
-        if(decodeTmp == null) {
-            decodeTmp = new byte[3][];
-        }
+        final int YUVstride = mcuCountX * imgHMax * 8;
+        final boolean requiresUpsampling = allocateDecodeTmp(YUVstride);
 
-        for(int compIdx=0 ; compIdx<3 ; compIdx++) {
-            Component c = order[compIdx];
-            int reqSize = c.minReqWidth * c.blocksPerMCUVert * 8;
-            if(decodeTmp[compIdx] == null || decodeTmp[compIdx].length < reqSize) {
-                decodeTmp[compIdx] = new byte[reqSize];
-            }
-        }
+        final byte[] YtoRGB = (order[0].upsampler != 0) ? upsampleTmp[0] : decodeTmp[0];
+        final byte[] UtoRGB = (order[1].upsampler != 0) ? upsampleTmp[1] : decodeTmp[1];
+        final byte[] VtoRGB = (order[2].upsampler != 0) ? upsampleTmp[2] : decodeTmp[2];
 
         for(int j=0 ; j<numMCURows ; j++) {
-            ++currentMCURow;
-            for(int i=0 ; i<mcuCountX ; i++) {
-                for(int compIdx=0 ; compIdx<3 ; compIdx++) {
-                    Component c = order[compIdx];
-                    int outStride = c.minReqWidth;
-                    int outPosY = 8*i*c.blocksPerMCUHorz;
+            decodeMCUrow();
 
-                    for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*outStride) {
-                        for(int x=0,outPos=outPosY ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
-                            try {
-                                decodeBlock(data, c);
-                            } catch (ArrayIndexOutOfBoundsException ex) {
-                                throwBadHuffmanCode();
-                            }
-                            idct2D.compute(decodeTmp[compIdx], outPos, outStride, data);
-                        }
-                    }
-                }
-                if(--todo <= 0) {
-                    if(!checkRestart()) {
-                        break;
-                    }
-                }
+            if(requiresUpsampling) {
+                doUpsampling(YUVstride);
             }
-
-            // TODO: upsample
             
             int outPos = dst.position();
             int n = imgVMax*8;
             n = Math.min(imageHeight - (currentMCURow-1)*n, n);
             for(int i=0 ; i<n ; i++) {
-                YUVtoRGB(dst, outPos, decodeTmp[0], decodeTmp[1], decodeTmp[2], i*order[0].minReqWidth, imageWidth);
+                YUVtoRGB(dst, outPos, YtoRGB, UtoRGB, VtoRGB, i*YUVstride, imageWidth);
                 outPos += stride;
             }
             dst.position(outPos);
@@ -240,6 +215,49 @@ public class Jpeg {
             }
         }
         
+        checkDecodeEnd();
+    }
+
+
+    public void decodeRGB(byte[] dst, int offset, int stride, int numMCURows) throws IOException {
+        if(!insideSOS) {
+            throw new IllegalStateException("decode not started");
+        }
+
+        if(numMCURows <= 0 || currentMCURow + numMCURows > mcuCountY) {
+            throw new IllegalArgumentException("numMCURows");
+        }
+
+        if(order.length != 3) {
+            throw new UnsupportedOperationException("RGB decode only supported for 3 channels");
+        }
+
+        final int YUVstride = mcuCountX * imgHMax * 8;
+        final boolean requiresUpsampling = allocateDecodeTmp(YUVstride);
+
+        final byte[] YtoRGB = (order[0].upsampler != 0) ? upsampleTmp[0] : decodeTmp[0];
+        final byte[] UtoRGB = (order[1].upsampler != 0) ? upsampleTmp[1] : decodeTmp[1];
+        final byte[] VtoRGB = (order[2].upsampler != 0) ? upsampleTmp[2] : decodeTmp[2];
+
+        for(int j=0 ; j<numMCURows ; j++) {
+            decodeMCUrow();
+
+            if(requiresUpsampling) {
+                doUpsampling(YUVstride);
+            }
+
+            int n = imgVMax*8;
+            n = Math.min(imageHeight - (currentMCURow-1)*n, n);
+            for(int i=0 ; i<n ; i++) {
+                YUVtoRGB(dst, offset, YtoRGB, UtoRGB, VtoRGB, i*YUVstride, imageWidth);
+                offset += stride;
+            }
+
+            if(marker != MARKER_NONE) {
+                break;
+            }
+        }
+
         checkDecodeEnd();
     }
     
@@ -716,12 +734,104 @@ public class Jpeg {
             c.height = (imageHeight * c.blocksPerMCUVert + vMax - 1) / vMax;
             c.minReqWidth = mcuCountX * c.blocksPerMCUHorz * 8;
             c.minReqHeight = mcuCountY * c.blocksPerMCUVert * 8;
+
+            if(c.blocksPerMCUHorz < hMax) {
+                c.upsampler |= 1;
+            }
+            if(c.blocksPerMCUVert < vMax) {
+                c.upsampler |= 2;
+            }
         }
     }
 
     private void ensureHeaderDecoded() throws IllegalStateException {
         if(!headerDecoded) {
             throw new IllegalStateException("need to decode header first");
+        }
+    }
+
+    private boolean allocateDecodeTmp(int YUVstride) {
+        if(decodeTmp == null) {
+            decodeTmp = new byte[3][];
+        }
+
+        boolean requiresUpsampling = false;
+        for(int compIdx=0 ; compIdx<3 ; compIdx++) {
+            Component c = order[compIdx];
+            int reqSize = c.minReqWidth * c.blocksPerMCUVert * 8;
+            if(decodeTmp[compIdx] == null || decodeTmp[compIdx].length < reqSize) {
+                decodeTmp[compIdx] = new byte[reqSize];
+            }
+            if(c.upsampler != 0) {
+                if(upsampleTmp == null) {
+                    upsampleTmp = new byte[3][];
+                }
+                int upsampleReq = imgVMax * 8 * YUVstride;
+                if(upsampleTmp[compIdx] == null || upsampleTmp[compIdx].length < upsampleReq) {
+                    upsampleTmp[compIdx] = new byte[upsampleReq];
+                }
+                requiresUpsampling = true;
+            }
+        }
+        return requiresUpsampling;
+    }
+
+    private void decodeMCUrow() throws IOException {
+        ++currentMCURow;
+        for(int i=0 ; i<mcuCountX ; i++) {
+            for(int compIdx=0 ; compIdx<3 ; compIdx++) {
+                Component c = order[compIdx];
+                int outStride = c.minReqWidth;
+                int outPosY = 8*i*c.blocksPerMCUHorz;
+
+                for(int y=0 ; y<c.blocksPerMCUVert ; y++,outPosY+=8*outStride) {
+                    for(int x=0,outPos=outPosY ; x<c.blocksPerMCUHorz ; x++,outPos+=8) {
+                        try {
+                            decodeBlock(data, c);
+                        } catch (ArrayIndexOutOfBoundsException ex) {
+                            throwBadHuffmanCode();
+                        }
+                        idct2D.compute(decodeTmp[compIdx], outPos, outStride, data);
+                    }
+                }
+            }
+            if(--todo <= 0) {
+                if(!checkRestart()) {
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void doUpsampling(int YUVstride) {
+        for(int compIdx=0 ; compIdx<3 ; compIdx++) {
+            Component c = order[compIdx];
+            int inStride = c.minReqWidth;
+            int height = c.blocksPerMCUVert * 8;
+            switch(c.upsampler) {
+                case 1:
+                    for(int i=0 ; i<height ; i++) {
+                        upsampleH2(upsampleTmp[compIdx], i*YUVstride, decodeTmp[compIdx], i*inStride, c.width);
+                    }
+                    break;
+
+                case 2:
+                    for(int i=0,inPos0=0,inPos1=0 ; i<height ; i++) {
+                        upsampleV2(upsampleTmp[compIdx], (i*2  )*YUVstride, decodeTmp[compIdx], inPos0, inPos1, c.width);
+                        upsampleV2(upsampleTmp[compIdx], (i*2+1)*YUVstride, decodeTmp[compIdx], inPos1, inPos0, c.width);
+                        inPos0 = inPos1;
+                        inPos1 += inStride;
+                    }
+
+                case 3:
+                    for(int i=0,inPos0=0,inPos1=0 ; i<height ; i++) {
+                        upsampleHV2(upsampleTmp[compIdx], (i*2  )*YUVstride, decodeTmp[compIdx], inPos0, inPos1, c.width);
+                        upsampleHV2(upsampleTmp[compIdx], (i*2+1)*YUVstride, decodeTmp[compIdx], inPos1, inPos0, c.width);
+                        inPos0 = inPos1;
+                        inPos1 += inStride;
+                    }
+                    break;
+            }
         }
     }
 
@@ -763,6 +873,51 @@ public class Jpeg {
             outPos += 4;
             inPos++;
         } while(--count > 0);
+    }
+
+    private static void upsampleH2(byte[] out, int outPos, byte[] in, int inPos, int width) {
+        if(width == 1) {
+            out[outPos] = out[outPos+1] = in[inPos];
+        } else {
+            int i0 = in[inPos  ] & 255;
+            int i1 = in[inPos+1] & 255;
+            out[outPos  ] = (byte)i0;
+            out[outPos+1] = (byte)((i0*3 + i1 + 2) >> 2);
+            for(int i=2 ; i<width ; i++) {
+                int i2 = in[inPos+i] & 255;
+                int n = i1*3 + 2;
+                out[outPos+i*2-2] = (byte)((n + i0) >> 2);
+                out[outPos+i*2-1] = (byte)((n + i2) >> 2);
+                i0 = i1;
+                i1 = i2;
+            }
+            out[outPos+width*2-2] = (byte)((i0*3 + i1 + 2) >> 2);
+            out[outPos+width*2-1] = (byte)i1;
+        }
+    }
+
+    private static void upsampleV2(byte[] out, int outPos, byte[] in, int inPos0, int inPos1, int width) {
+        for(int i=0 ; i<width ; i++) {
+            out[outPos+i] = (byte)((3*(in[inPos0+i] & 255) + (in[inPos1+i] & 255) + 2) >> 2);
+        }
+    }
+    
+    private static void upsampleHV2(byte[] out, int outPos, byte[] in, int inPos0, int inPos1, int width) {
+        if(width == 1) {
+            int i0 = in[inPos0] & 255;
+            int i1 = in[inPos1] & 255;
+            out[outPos] = out[outPos+1] = (byte)((i0*3 + i1 + 2) >> 2);
+        } else {
+            int i1 = 3*(in[inPos0] & 255) + (in[inPos1] & 255);
+            out[outPos] = (byte)((i1 + 2) >> 2);
+            for(int i=1 ; i<width ; i++) {
+                int i0 = i1;
+                i1 = 3*(in[inPos0+i] & 255) + (in[inPos1+i] & 255);
+                out[outPos+i*2-1] = (byte)((3*i0 + i1 + 8) >> 4);
+                out[outPos+i*2  ] = (byte)((3*i1 + i0 + 8) >> 4);
+            }
+            out[outPos+width*2-1] = (byte)((i1 + 2) >> 2);
+        }
     }
 
     static final char dezigzag[] = (
