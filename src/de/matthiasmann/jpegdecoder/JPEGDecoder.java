@@ -36,6 +36,9 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /**
+ * A pure Java JPEG decoder
+ *
+ * Partly based on code from Sean Barrett
  *
  * @author Matthias Mann
  */
