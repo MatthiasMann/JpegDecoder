@@ -843,9 +843,9 @@ public class JPEGDecoder {
             int y = (inY[inPos] & 255);
             int u = (inU[inPos] & 255) - 128;
             int v = (inV[inPos] & 255) - 128;
-            int r = y + ((32768 + u*91881           ) >> 16);
-            int g = y + ((32768 - u*46802 - v* 22554) >> 16);
-            int b = y + ((32768           + v*116130) >> 16);
+            int r = y + ((32768 + v*91881           ) >> 16);
+            int g = y + ((32768 - v*46802 - u* 22554) >> 16);
+            int b = y + ((32768           + u*116130) >> 16);
             if(r > 255) r = 255; else if(r < 0) r = 0;
             if(g > 255) g = 255; else if(g < 0) g = 0;
             if(b > 255) b = 255; else if(b < 0) b = 0;
@@ -863,9 +863,9 @@ public class JPEGDecoder {
             int y = (inY[inPos] & 255);
             int u = (inU[inPos] & 255) - 128;
             int v = (inV[inPos] & 255) - 128;
-            int r = y + ((32768 + u*91881           ) >> 16);
-            int g = y + ((32768 - u*46802 - v* 22554) >> 16);
-            int b = y + ((32768           + v*116130) >> 16);
+            int r = y + ((32768 + v*91881           ) >> 16);
+            int g = y + ((32768 - v*46802 - u* 22554) >> 16);
+            int b = y + ((32768           + u*116130) >> 16);
             if(r > 255) r = 255; else if(r < 0) r = 0;
             if(g > 255) g = 255; else if(g < 0) g = 0;
             if(b > 255) b = 255; else if(b < 0) b = 0;
