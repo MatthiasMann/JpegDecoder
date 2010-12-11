@@ -80,7 +80,16 @@ public class JPEGDecoder {
 
     private byte[][] decodeTmp;
     private byte[][] upsampleTmp;
-    
+
+    /**
+     * Constructs a new JPEGDecoder for the specified InputStream.
+     * The input stream is not closed by this decoder and must be closed by the
+     * calling code.
+     * The JPEG header is only read when calling {@link #decodeHeader() } or
+     * {@link #startDecode() }
+     *
+     * @param is the InputStream containing the JPG data
+     */
     public JPEGDecoder(InputStream is) {
         this.is = is;
         this.inputBuffer = new byte[4096];
@@ -95,10 +104,24 @@ public class JPEGDecoder {
         return ignoreIOerror;
     }
 
+    /**
+     * Controls the behavior on IO errors.
+     * This must be called before {@link #decodeHeader() }
+     *
+     * @param ignoreIOerror if true IO errors are ignored
+     */
     public void setIgnoreIOerror(boolean ignoreIOerror) {
+        if(headerDecoded) {
+            throw new IllegalStateException("header already decoded");
+        }
         this.ignoreIOerror = ignoreIOerror;
     }
 
+    /**
+     * Decodes the JPEG header. This must be called before the image size can be queried.
+     * 
+     * @throws IOException if an IO error occured
+     */
     public void decodeHeader() throws IOException {
         if(!headerDecoded) {
             headerDecoded = true;
@@ -116,40 +139,86 @@ public class JPEGDecoder {
                 }
             }
 
-            imageWidth();
+            processSOF();
         }
     }
 
-
+    /**
+     * Returns the width of the image.
+     * {@link #decodeHeader() } must be called before the image width can be queried.
+     *
+     * @return the width of the JPEG.
+     */
     public int getImageWidth() {
         ensureHeaderDecoded();
         return imageWidth;
     }
 
+    /**
+     * Returns the height of the image.
+     * {@link #decodeHeader() } must be called before the image height can be queried.
+     *
+     * @return the height of the JPEG.
+     */
     public int getImageHeight() {
         ensureHeaderDecoded();
         return imageHeight;
     }
 
+    /**
+     * Returns the number of color components.
+     * {@link #decodeHeader() } must be called before the color components can be queried.
+     *
+     * @return 1 for gray scale, 3 for color
+     */
     public int getNumComponents() {
         ensureHeaderDecoded();
         return components.length;
     }
 
+    /**
+     * Returns the informations about the specific color component.
+     * {@link #decodeHeader() } must be called before the color components can be queried.
+     *
+     * @param idx the color component. Must be &lt; then {@link #getNumComponents() }
+     * @return the component information
+     */
     public Component getComponent(int idx) {
         ensureHeaderDecoded();
         return components[idx];
     }
 
+    /**
+     * Returns the height of a MCU row. This is the smallest granularity for
+     * the raw decode API.
+     * {@link #decodeHeader() } must be called before the MCU row height can be queried.
+     *
+     * @return the height of an MCU row.
+     */
     public int getMCURowHeight() {
         ensureHeaderDecoded();
         return imgVMax * 8;
     }
 
+    /**
+     * Returns the number of MCU rows.
+     * {@link #decodeHeader() } must be called before the number of MCU rows can be queried.
+     *
+     * @return the number of MCU rows.
+     * @see #getMCURowHeight()
+     */
     public int getNumMCURows() {
         return mcuCountY;
     }
-    
+
+    /**
+     * Starts the decode process. This will advance the JPEG stream to the start
+     * of the image data. It also checks if that JPEG file can be decoded by this
+     * library.
+     *
+     * @return true if the JPEg can be decoded.
+     * @throws IOException if an IO error occured
+     */
     public boolean startDecode() throws IOException {
         if(insideSOS) {
             throw new IllegalStateException("decode already started");
@@ -177,6 +246,20 @@ public class JPEGDecoder {
         return false;
     }
 
+    /**
+     * Decodes a number of MCU rows into the specifed ByteBuffer as RGBA data.
+     * {@link #startDecode() } must be called before this method.
+     *
+     * @param dst the target ByteBuffer
+     * @param stride the distance in bytes from the start of one line to the start of the next.
+     * @param numMCURows the number of MCU rows to decode.
+     * @throws IOException if an IO error occured
+     * @throws IllegalArgumentException if numMCURows is invalid
+     * @throws IllegalStateException if {@link #startDecode() } has not been called
+     * @throws UnsupportedOperationException if the JPEG is not a color JPEG
+     * @see #getNumComponents()
+     * @see #getNumMCURows() 
+     */
     public void decodeRGB(ByteBuffer dst, int stride, int numMCURows) throws IOException {
         if(!insideSOS) {
             throw new IllegalStateException("decode not started");
@@ -221,7 +304,21 @@ public class JPEGDecoder {
         checkDecodeEnd();
     }
 
-
+    /**
+     * Decodes a number of MCU rows into the specifed byte array as RGBA data.
+     * {@link #startDecode() } must be called before this method.
+     *
+     * @param dst the target byte array
+     * @param offset the target offset in the byte array
+     * @param stride the distance in bytes from the start of one line to the start of the next.
+     * @param numMCURows the number of MCU rows to decode.
+     * @throws IOException if an IO error occured
+     * @throws IllegalArgumentException if numMCURows is invalid
+     * @throws IllegalStateException if {@link #startDecode() } has not been called
+     * @throws UnsupportedOperationException if the JPEG is not a color JPEG
+     * @see #getNumComponents()
+     * @see #getNumMCURows()
+     */
     public void decodeRGB(byte[] dst, int offset, int stride, int numMCURows) throws IOException {
         if(!insideSOS) {
             throw new IllegalStateException("decode not started");
@@ -263,7 +360,22 @@ public class JPEGDecoder {
 
         checkDecodeEnd();
     }
-    
+
+    /**
+     * Decodes each color component of the JPEG file seprately into a separate
+     * ByteBuffer. The number of buffers must match the number of color channels.
+     * Each color channel can have a different sub sampling factor.
+     *
+     * @param buffer the ByteBuffers for each color component
+     * @param strides the distance in bytes from the start of one line to the start of the next for each color component
+     * @param numMCURows the number of MCU rows to decode.
+     * @throws IOException if an IO error occured
+     * @throws IllegalArgumentException if numMCURows is invalid, or if the number of buffers / strides is not enough
+     * @throws IllegalStateException if {@link #startDecode() } has not been called
+     * @throws UnsupportedOperationException if the clor components are not in the same SOS chunk
+     * @see #getNumComponents()
+     * @see #getNumMCURows()
+     */
     public void decodeRAW(ByteBuffer[] buffer, int[] strides, int numMCURows) throws IOException {
         if(!insideSOS) {
             throw new IllegalStateException("decode not started");
@@ -668,7 +780,7 @@ public class JPEGDecoder {
         }
     }
 
-    private void imageWidth() throws IOException {
+    private void processSOF() throws IOException {
         int lf = getU16();
         if(lf < 11) {
             throw new IOException("bad SOF length");
