@@ -120,7 +120,7 @@ public class JPEGDecoder {
     /**
      * Decodes the JPEG header. This must be called before the image size can be queried.
      * 
-     * @throws IOException if an IO error occured
+     * @throws IOException if an IO error occurred
      */
     public void decodeHeader() throws IOException {
         if(!headerDecoded) {
@@ -217,7 +217,7 @@ public class JPEGDecoder {
      * library.
      *
      * @return true if the JPEg can be decoded.
-     * @throws IOException if an IO error occured
+     * @throws IOException if an IO error occurred
      */
     public boolean startDecode() throws IOException {
         if(insideSOS) {
@@ -247,13 +247,13 @@ public class JPEGDecoder {
     }
 
     /**
-     * Decodes a number of MCU rows into the specifed ByteBuffer as RGBA data.
+     * Decodes a number of MCU rows into the specified ByteBuffer as RGBA data.
      * {@link #startDecode() } must be called before this method.
      *
      * @param dst the target ByteBuffer
      * @param stride the distance in bytes from the start of one line to the start of the next.
      * @param numMCURows the number of MCU rows to decode.
-     * @throws IOException if an IO error occured
+     * @throws IOException if an IO error occurred
      * @throws IllegalArgumentException if numMCURows is invalid
      * @throws IllegalStateException if {@link #startDecode() } has not been called
      * @throws UnsupportedOperationException if the JPEG is not a color JPEG
@@ -305,74 +305,17 @@ public class JPEGDecoder {
     }
 
     /**
-     * Decodes a number of MCU rows into the specifed byte array as RGBA data.
-     * {@link #startDecode() } must be called before this method.
-     *
-     * @param dst the target byte array
-     * @param offset the target offset in the byte array
-     * @param stride the distance in bytes from the start of one line to the start of the next.
-     * @param numMCURows the number of MCU rows to decode.
-     * @throws IOException if an IO error occured
-     * @throws IllegalArgumentException if numMCURows is invalid
-     * @throws IllegalStateException if {@link #startDecode() } has not been called
-     * @throws UnsupportedOperationException if the JPEG is not a color JPEG
-     * @see #getNumComponents()
-     * @see #getNumMCURows()
-     */
-    public void decodeRGB(byte[] dst, int offset, int stride, int numMCURows) throws IOException {
-        if(!insideSOS) {
-            throw new IllegalStateException("decode not started");
-        }
-
-        if(numMCURows <= 0 || currentMCURow + numMCURows > mcuCountY) {
-            throw new IllegalArgumentException("numMCURows");
-        }
-
-        if(order.length != 3) {
-            throw new UnsupportedOperationException("RGB decode only supported for 3 channels");
-        }
-
-        final int YUVstride = mcuCountX * imgHMax * 8;
-        final boolean requiresUpsampling = allocateDecodeTmp(YUVstride);
-
-        final byte[] YtoRGB = (order[0].upsampler != 0) ? upsampleTmp[0] : decodeTmp[0];
-        final byte[] UtoRGB = (order[1].upsampler != 0) ? upsampleTmp[1] : decodeTmp[1];
-        final byte[] VtoRGB = (order[2].upsampler != 0) ? upsampleTmp[2] : decodeTmp[2];
-
-        for(int j=0 ; j<numMCURows ; j++) {
-            decodeMCUrow();
-
-            if(requiresUpsampling) {
-                doUpsampling(YUVstride);
-            }
-
-            int n = imgVMax*8;
-            n = Math.min(imageHeight - (currentMCURow-1)*n, n);
-            for(int i=0 ; i<n ; i++) {
-                YUVtoRGB(dst, offset, YtoRGB, UtoRGB, VtoRGB, i*YUVstride, imageWidth);
-                offset += stride;
-            }
-
-            if(marker != MARKER_NONE) {
-                break;
-            }
-        }
-
-        checkDecodeEnd();
-    }
-
-    /**
-     * Decodes each color component of the JPEG file seprately into a separate
+     * Decodes each color component of the JPEG file separately into a separate
      * ByteBuffer. The number of buffers must match the number of color channels.
      * Each color channel can have a different sub sampling factor.
      *
      * @param buffer the ByteBuffers for each color component
      * @param strides the distance in bytes from the start of one line to the start of the next for each color component
      * @param numMCURows the number of MCU rows to decode.
-     * @throws IOException if an IO error occured
+     * @throws IOException if an IO error occurred
      * @throws IllegalArgumentException if numMCURows is invalid, or if the number of buffers / strides is not enough
      * @throws IllegalStateException if {@link #startDecode() } has not been called
-     * @throws UnsupportedOperationException if the clor components are not in the same SOS chunk
+     * @throws UnsupportedOperationException if the color components are not in the same SOS chunk
      * @see #getNumComponents()
      * @see #getNumMCURows()
      */
@@ -948,26 +891,6 @@ public class JPEGDecoder {
                     break;
             }
         }
-    }
-
-    private static void YUVtoRGB(byte[] out, int outPos, byte[] inY, byte[] inU, byte[] inV, int inPos, int count) {
-        do {
-            int y = (inY[inPos] & 255);
-            int u = (inU[inPos] & 255) - 128;
-            int v = (inV[inPos] & 255) - 128;
-            int r = y + ((32768 + v*91881           ) >> 16);
-            int g = y + ((32768 - v*46802 - u* 22554) >> 16);
-            int b = y + ((32768           + u*116130) >> 16);
-            if(r > 255) r = 255; else if(r < 0) r = 0;
-            if(g > 255) g = 255; else if(g < 0) g = 0;
-            if(b > 255) b = 255; else if(b < 0) b = 0;
-            out[outPos+0] = (byte)r;
-            out[outPos+1] = (byte)g;
-            out[outPos+2] = (byte)b;
-            out[outPos+3] = (byte)255;
-            outPos += 4;
-            inPos++;
-        } while(--count > 0);
     }
 
     private static void YUVtoRGB(ByteBuffer out, int outPos, byte[] inY, byte[] inU, byte[] inV, int inPos, int count) {
