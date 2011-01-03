@@ -468,7 +468,7 @@ public class JPEGDecoder {
                 continue;
             }
             int copy = (avail > len) ? len : avail;
-            System.arraycopy(inputBuffer, inputBufferPos, buf, off, len);
+            System.arraycopy(inputBuffer, inputBufferPos, buf, off, copy);
             off += copy;
             len -= copy;
             inputBufferPos += copy;
