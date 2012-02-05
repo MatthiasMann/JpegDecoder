@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2010, Matthias Mann
+ * Copyright (c) 2008-2012, Matthias Mann
  *
  * All rights reserved.
  *
@@ -33,6 +33,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.ShortBuffer;
 import java.util.Arrays;
 
 /**
@@ -212,6 +213,17 @@ public class JPEGDecoder {
     }
 
     /**
+     * Returns the number of MCU columns.
+     * {@link #decodeHeader() } must be called before the number of MCU columns can be queried.
+     *
+     * @return the number of MCU columns.
+     * @see #decodeDCTCoeffs(java.nio.ShortBuffer[], int) 
+     */
+    public int getNumMCUColumns() {
+        return mcuCountX;
+    }
+
+    /**
      * Starts the decode process. This will advance the JPEG stream to the start
      * of the image data. It also checks if that JPEG file can be decoded by this
      * library.
@@ -372,6 +384,80 @@ public class JPEGDecoder {
         for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
             Component c = order[compIdx];
             buffer[compIdx].position(c.outPos + numMCURows * c.blocksPerMCUVert * 8 * strides[compIdx]);
+        }
+    }
+
+    /**
+     * Decodes the dequantizied DCT coefficients into a buffer per color component.
+     * The number of buffers must match the number of color channels.
+     * Each color channel can have a different sub sampling factor.
+     * 
+     * @param buffer the ShortBuffers for each color component
+     * @param numMCURows the number of MCU rows to decode.
+     * @throws IOException if an IO error occurred
+     * @throws IllegalArgumentException if numMCURows is invalid, or if the number of buffers / strides is not enough
+     * @throws IllegalStateException if {@link #startDecode() } has not been called
+     * @throws UnsupportedOperationException if the color components are not in the same SOS chunk
+     * @see #getNumComponents()
+     * @see #getNumMCURows()
+     */
+    public void decodeDCTCoeffs(ShortBuffer[] buffer, int numMCURows) throws IOException {
+        if(!insideSOS) {
+            throw new IllegalStateException("decode not started");
+        }
+
+        if(numMCURows <= 0 || currentMCURow + numMCURows > mcuCountY) {
+            throw new IllegalArgumentException("numMCURows");
+        }
+
+        int scanN = order.length;
+        if(scanN != components.length) {
+            throw new UnsupportedOperationException("for RAW decode all components need to be decoded at once");
+        }
+        if(scanN > buffer.length) {
+            throw new IllegalArgumentException("not enough buffers");
+        }
+
+        for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+            order[compIdx].outPos = buffer[compIdx].position();
+        }
+
+        outer: for(int j=0 ; j<numMCURows ; j++) {
+            ++currentMCURow;
+            for(int i=0 ; i<mcuCountX ; i++) {
+                for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+                    Component c = order[compIdx];
+                    ShortBuffer sb = buffer[compIdx];
+                    int outStride = 64 * c.blocksPerMCUHorz * mcuCountX;
+                    int outPos = c.outPos + 64*i*c.blocksPerMCUHorz + j*c.blocksPerMCUVert*outStride;
+
+                    for(int y=0 ; y<c.blocksPerMCUVert ; y++) {
+                        sb.position(outPos);
+                        for(int x=0 ; x<c.blocksPerMCUHorz ; x++) {
+                            try {
+                                decodeBlock(data, c);
+                            } catch (ArrayIndexOutOfBoundsException ex) {
+                                throwBadHuffmanCode();
+                            }
+                            sb.put(data);
+                        }
+                        outPos += outStride;
+                    }
+                }
+                if(--todo <= 0) {
+                    if(!checkRestart()) {
+                        break outer;
+                    }
+                }
+            }
+        }
+
+        checkDecodeEnd();
+
+        for(int compIdx=0 ; compIdx<scanN ; compIdx++) {
+            Component c = order[compIdx];
+            int outStride = 64 * c.blocksPerMCUHorz * mcuCountX;
+            buffer[compIdx].position(c.outPos + numMCURows * c.blocksPerMCUVert * outStride);
         }
     }
 
