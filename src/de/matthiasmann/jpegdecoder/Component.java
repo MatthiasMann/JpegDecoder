@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2010, Matthias Mann
+ * Copyright (c) 2008-2012, Matthias Mann
  *
  * All rights reserved.
  *
@@ -72,5 +72,13 @@ public class Component {
 
     public int getHeight() {
         return height;
+    }
+
+    public int getBlocksPerMCUHorz() {
+        return blocksPerMCUHorz;
+    }
+
+    public int getBlocksPerMCUVert() {
+        return blocksPerMCUVert;
     }
 }
