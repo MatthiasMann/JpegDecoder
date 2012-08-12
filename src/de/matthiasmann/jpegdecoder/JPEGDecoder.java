@@ -209,6 +209,7 @@ public class JPEGDecoder {
      * @see #getMCURowHeight()
      */
     public int getNumMCURows() {
+        ensureHeaderDecoded();
         return mcuCountY;
     }
 
@@ -220,6 +221,7 @@ public class JPEGDecoder {
      * @see #decodeDCTCoeffs(java.nio.ShortBuffer[], int) 
      */
     public int getNumMCUColumns() {
+        ensureHeaderDecoded();
         return mcuCountX;
     }
 
@@ -228,7 +230,7 @@ public class JPEGDecoder {
      * of the image data. It also checks if that JPEG file can be decoded by this
      * library.
      *
-     * @return true if the JPEg can be decoded.
+     * @return true if the JPEG can be decoded.
      * @throws IOException if an IO error occurred
      */
     public boolean startDecode() throws IOException {
@@ -262,8 +264,15 @@ public class JPEGDecoder {
      * Decodes a number of MCU rows into the specified ByteBuffer as RGBA data.
      * {@link #startDecode() } must be called before this method.
      *
+     * <p>The first decoded line is placed at {@code dst.position() },
+     * the second line at {@code dst.position() + stride } and so on. After decoding
+     * the buffer position is at {@code dst.position() + n*stride } where n is
+     * the number of decoded lines which might be less than
+     * {@code numMCURows * getMCURowHeight() } at the end of the image.</p>
+     * 
      * @param dst the target ByteBuffer
      * @param stride the distance in bytes from the start of one line to the start of the next.
+     *               The absolute value should be &gt;= {@link #getImageWidth() }*4, can also be negative.
      * @param numMCURows the number of MCU rows to decode.
      * @throws IOException if an IO error occurred
      * @throws IllegalArgumentException if numMCURows is invalid
