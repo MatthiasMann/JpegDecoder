@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2012, Matthias Mann
+ * Copyright (c) 2008-2014, Matthias Mann
  *
  * All rights reserved.
  *
@@ -270,6 +270,9 @@ public class JPEGDecoder {
      * the number of decoded lines which might be less than
      * {@code numMCURows * getMCURowHeight() } at the end of the image.</p>
      * 
+     * <p>This method calls {@link #decode(java.nio.ByteBuffer, int, int, de.matthiasmann.jpegdecoder.YUVDecoder) }
+     * with {@link YUVtoRGBA#instance} as decoder.</p>
+     * 
      * @param dst the target ByteBuffer
      * @param stride the distance in bytes from the start of one line to the start of the next.
      *               The absolute value should be &gt;= {@link #getImageWidth() }*4, can also be negative.
@@ -280,8 +283,40 @@ public class JPEGDecoder {
      * @throws UnsupportedOperationException if the JPEG is not a color JPEG
      * @see #getNumComponents()
      * @see #getNumMCURows() 
+     * @deprecated This method should have been named {@code decodeRGBA}
      */
+    @Deprecated
     public void decodeRGB(ByteBuffer dst, int stride, int numMCURows) throws IOException {
+        decode(dst, stride, numMCURows, YUVtoRGBA.instance);
+    }
+    
+    /**
+     * Decodes a number of MCU rows into the specified ByteBuffer using the specified YUV decoder.
+     * {@link #startDecode() } must be called before this method.
+     *
+     * <p>The first decoded line is placed at {@code dst.position() },
+     * the second line at {@code dst.position() + stride } and so on. After decoding
+     * the buffer position is at {@code dst.position() + n*stride } where n is
+     * the number of decoded lines which might be less than
+     * {@code numMCURows * getMCURowHeight() } at the end of the image.</p>
+     * 
+     * @param dst the target ByteBuffer
+     * @param stride the distance in bytes from the start of one line to the start
+     *               of the next, can also be negative.
+     * @param numMCURows the number of MCU rows to decode.
+     * @param decoder the {@link YUVDecoder} instance to decode the YUV data
+     * @throws IOException if an IO error occurred
+     * @throws IllegalArgumentException if numMCURows is invalid
+     * @throws IllegalStateException if {@link #startDecode() } has not been called
+     * @throws UnsupportedOperationException if the JPEG is not a color JPEG
+     * @see #getNumComponents()
+     * @see #getNumMCURows() 
+     */
+    public void decode(ByteBuffer dst, int stride, int numMCURows, YUVDecoder decoder) throws IOException {
+        if(decoder == null) {
+            throw new NullPointerException("decoder");
+        }
+        
         if(!insideSOS) {
             throw new IllegalStateException("decode not started");
         }
@@ -312,7 +347,7 @@ public class JPEGDecoder {
             int n = imgVMax*8;
             n = Math.min(imageHeight - (currentMCURow-1)*n, n);
             for(int i=0 ; i<n ; i++) {
-                YUVtoRGB(dst, outPos, YtoRGB, UtoRGB, VtoRGB, i*YUVstride, imageWidth);
+                decoder.decode(dst, outPos, YtoRGB, UtoRGB, VtoRGB, i*YUVstride, imageWidth);
                 outPos += stride;
             }
             dst.position(outPos);
@@ -986,26 +1021,6 @@ public class JPEGDecoder {
                     break;
             }
         }
-    }
-
-    private static void YUVtoRGB(ByteBuffer out, int outPos, byte[] inY, byte[] inU, byte[] inV, int inPos, int count) {
-        do {
-            int y = (inY[inPos] & 255);
-            int u = (inU[inPos] & 255) - 128;
-            int v = (inV[inPos] & 255) - 128;
-            int r = y + ((32768 + v*91881           ) >> 16);
-            int g = y + ((32768 - v*46802 - u* 22554) >> 16);
-            int b = y + ((32768           + u*116130) >> 16);
-            if(r > 255) r = 255; else if(r < 0) r = 0;
-            if(g > 255) g = 255; else if(g < 0) g = 0;
-            if(b > 255) b = 255; else if(b < 0) b = 0;
-            out.put(outPos+0, (byte)r);
-            out.put(outPos+1, (byte)g);
-            out.put(outPos+2, (byte)b);
-            out.put(outPos+3, (byte)255);
-            outPos += 4;
-            inPos++;
-        } while(--count > 0);
     }
 
     private static void upsampleH2(byte[] out, int outPos, byte[] in, int inPos, int width) {
