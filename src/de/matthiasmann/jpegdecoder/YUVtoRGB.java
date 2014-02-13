@@ -36,7 +36,7 @@ import java.nio.ByteBuffer;
  *
  * @author Matthias Mann
  */
-public class YUVtoRGB {
+public class YUVtoRGB implements YUVDecoder {
     
     public static final YUVtoRGB instance = new YUVtoRGB();
 
